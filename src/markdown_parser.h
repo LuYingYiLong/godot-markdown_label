@@ -4,9 +4,11 @@
 #include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/classes/style_box.hpp>
 #include <godot_cpp/classes/text_paragraph.hpp>
+#include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/variant/packed_string_array.hpp>
 #include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/vector2.hpp>
+#include <godot_cpp/templates/hash_map.hpp>
 
 #include <cstdint>
 #include <vector>
@@ -23,6 +25,7 @@ enum MarkdownBlockType {
 	MARKDOWN_BLOCK_THEMATIC_BREAK,
 	MARKDOWN_BLOCK_IMAGE,
 	MARKDOWN_BLOCK_TABLE,
+	MARKDOWN_BLOCK_TASK_LIST,
 };
 
 struct MarkdownBlock {
@@ -38,6 +41,7 @@ struct MarkdownBlock {
 	String anchor;
 	int32_t indent = 0;
 	std::vector<int32_t> item_levels;
+	std::vector<bool> task_checked;
 	std::vector<MarkdownBlock> children;
 };
 
@@ -45,6 +49,7 @@ struct MarkdownInlineSpan {
 	String text;
 	String link_uri;
 	String image_uri;
+	String image_title;
 	int64_t start = 0;
 	int64_t end = 0;
 	Color color;
@@ -63,6 +68,7 @@ struct MarkdownTableCell {
 	Rect2 text_rect;
 	String text;
 	std::vector<MarkdownInlineSpan> spans;
+	HashMap<String, Ref<Texture2D>> image_map;
 	int64_t global_start = 0;
 	int64_t global_end = 0;
 	Color text_color;
@@ -74,6 +80,7 @@ struct MarkdownBlockquoteLine {
 	Rect2 text_rect;
 	String text;
 	std::vector<MarkdownInlineSpan> spans;
+	HashMap<String, Ref<Texture2D>> image_map;
 	int64_t global_start = 0;
 	int64_t global_end = 0;
 	int32_t depth = 1;
@@ -94,6 +101,8 @@ struct MarkdownListMarker {
 	Ref<Font> font;
 	int32_t font_size = 16;
 	Color color;
+	bool task_checked = false;
+	Ref<Texture2D> icon;
 };
 
 struct MarkdownCanvasItem {
@@ -132,6 +141,7 @@ struct MarkdownCanvasItem {
 	uint64_t content_hash = 0;
 	std::vector<MarkdownListMarker> list_markers;
 	std::vector<MarkdownTableCell> cells;
+	HashMap<String, Ref<Texture2D>> image_map;
 	std::vector<MarkdownBlockquoteLine> quote_lines;
 };
 

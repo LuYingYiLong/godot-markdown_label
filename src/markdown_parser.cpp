@@ -246,6 +246,38 @@ namespace {
 		return true;
 	}
 
+	static bool is_task_list_item(const String& p_line, String& r_item, bool& r_checked) {
+		const String trimmed_left = trim_left_indent(p_line);
+		if (trimmed_left.length() < 5) {
+			return false;
+		}
+
+		const char32_t marker = trimmed_left[0];
+		if ((marker != '-' && marker != '*' && marker != '+') || trimmed_left[1] != ' ') {
+			return false;
+		}
+
+		if (trimmed_left[2] != '[' || trimmed_left[4] != ']') {
+			return false;
+		}
+
+		const char32_t check_char = trimmed_left[3];
+		if (check_char == 'x' || check_char == 'X') {
+			r_checked = true;
+		} else if (check_char == ' ') {
+			r_checked = false;
+		} else {
+			return false;
+		}
+
+		if (trimmed_left.length() <= 5 || trimmed_left[5] != ' ') {
+			return false;
+		}
+
+		r_item = trimmed_left.substr(6).strip_edges();
+		return true;
+	}
+
 	static bool is_lazy_continuation(const std::vector<String>& p_lines, int32_t p_index) {
 		if (p_index >= static_cast<int32_t>(p_lines.size())) {
 			return false;
@@ -392,7 +424,7 @@ MarkdownInlineSpanParseResult parse_inline_spans(const String& p_text) {
 	auto append_span = [&result](const MarkdownInlineSpan& span) {
 		if (!result.spans.empty()) {
 			const MarkdownInlineSpan& last = result.spans.back();
-			if (last.link_uri == span.link_uri && last.image_uri == span.image_uri && last.bold == span.bold && last.italic == span.italic && last.code == span.code && last.strikethrough == span.strikethrough && last.highlight == span.highlight && last.custom_color == span.custom_color && (!last.custom_color || last.color == span.color) && last.end == span.start) {
+			if (last.link_uri == span.link_uri && last.image_uri == span.image_uri && last.image_title == span.image_title && last.bold == span.bold && last.italic == span.italic && last.code == span.code && last.strikethrough == span.strikethrough && last.highlight == span.highlight && last.custom_color == span.custom_color && (!last.custom_color || last.color == span.color) && last.end == span.start) {
 				result.spans.back().text += span.text;
 				result.spans.back().end = span.end;
 				return;
@@ -483,9 +515,29 @@ MarkdownInlineSpanParseResult parse_inline_spans(const String& p_text) {
 				size_t url_end = find_url_close(bracket_end + 2);
 				if (url_end != std::string::npos) {
 					MarkdownInlineSpan span;
-					span.image_uri = String::utf8(raw.data() + bracket_end + 2, static_cast<int64_t>(url_end - bracket_end - 2));
-					span.start = static_cast<int64_t>(output.length());
-					span.end = span.start;
+					String full_url = String::utf8(raw.data() + bracket_end + 2, static_cast<int64_t>(url_end - bracket_end - 2)).strip_edges();
+					int64_t title_start = -1;
+					for (int64_t ui = 0; ui < full_url.length(); ui++) {
+						if (full_url[ui] == '"') {
+							title_start = ui;
+							break;
+						}
+					}
+					if (title_start >= 0) {
+						span.image_uri = full_url.substr(0, static_cast<int64_t>(title_start)).strip_edges();
+						int64_t title_end = full_url.rfind("\"");
+						if (title_end > title_start) {
+							span.image_title = full_url.substr(title_start + 1, title_end - title_start - 1);
+						}
+					} else {
+						span.image_uri = full_url;
+					}
+					String alt_text = String::utf8(raw.data() + pos + 2, static_cast<int64_t>(bracket_end - pos - 2));
+					const String display_text = alt_text.is_empty() ? String::chr(0xfffc) : alt_text;
+					span.text = display_text;
+					output += display_text;
+					span.start = static_cast<int64_t>(output.length()) - static_cast<int64_t>(display_text.length());
+					span.end = static_cast<int64_t>(output.length());
 					append_span(span);
 					pos = url_end + 1;
 					continue;
@@ -707,6 +759,9 @@ std::vector<MarkdownBlock> parse_markdown_blocks(const String& p_text, const Mar
 	std::vector<String> blockquote_lines;
 	std::vector<int32_t> blockquote_depths;
 	int32_t blockquote_line = 0;
+	std::vector<String> task_items;
+	std::vector<bool> task_checked_vec;
+	int32_t task_line = 0;
 	std::vector<String> list_items;
 	int32_t list_base_indent = 0;
 	int32_t list_line = 0;
@@ -751,6 +806,22 @@ std::vector<MarkdownBlock> parse_markdown_blocks(const String& p_text, const Mar
 		}
 		};
 
+	auto flush_task_list = [&]() {
+		if (!task_items.empty()) {
+			MarkdownBlock block;
+			block.type = MARKDOWN_BLOCK_TASK_LIST;
+			block.line = task_line;
+			for (const String& item : task_items) {
+				block.items.push_back(item);
+			}
+			block.task_checked = task_checked_vec;
+			blocks.push_back(block);
+			task_items.clear();
+			task_checked_vec.clear();
+			task_line = 0;
+		}
+	};
+
 	auto flush_list = [&]() {
 		if (!list_items.empty()) {
 			MarkdownBlock block;
@@ -784,6 +855,7 @@ std::vector<MarkdownBlock> parse_markdown_blocks(const String& p_text, const Mar
 	auto flush_all = [&]() {
 		flush_paragraph();
 		flush_blockquote();
+		flush_task_list();
 		flush_list();
 		flush_code();
 		};
@@ -981,9 +1053,26 @@ std::vector<MarkdownBlock> parse_markdown_blocks(const String& p_text, const Mar
 			state.in_blockquote = false;
 		}
 
+		// Task list
+		String task_item_text;
+		bool task_checked = false;
+		if (is_task_list_item(line, task_item_text, task_checked)) {
+			flush_paragraph();
+			flush_blockquote();
+			flush_list();
+			if (task_items.empty()) {
+				task_line = index + 1;
+			}
+			task_items.push_back(task_item_text);
+			task_checked_vec.push_back(task_checked);
+			index++;
+			continue;
+		}
+
 		// Unordered list
 		String list_item_text;
 		if (is_unordered_list_item(line, list_item_text)) {
+			flush_task_list();
 			flush_paragraph();
 			flush_blockquote();
 			int32_t item_indent = 0;

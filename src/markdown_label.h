@@ -11,6 +11,7 @@
 #include <godot_cpp/classes/scroll_container.hpp>
 #include <godot_cpp/classes/style_box.hpp>
 #include <godot_cpp/classes/text_paragraph.hpp>
+#include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/v_scroll_bar.hpp>
 #include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/variant.hpp>
@@ -84,6 +85,11 @@ struct MarkdownThemeCache {
 		Ref<StyleBox> table_striped_panel;
 	} stylebox;
 
+	struct Icons {
+		Ref<Texture2D> task_checked;
+		Ref<Texture2D> task_unchecked;
+	} icon;
+
 	void build(Control* p_owner, int32_t p_extra_font_size);
 };
 
@@ -127,11 +133,13 @@ private:
 	void draw_search_highlight_for_item(const MarkdownCanvasItem& p_item);
 	void draw_range_background_for_paragraph(const Ref<TextParagraph>& p_paragraph, const Rect2& p_text_rect, int64_t p_global_start, int64_t p_global_end, int64_t p_range_start, int64_t p_range_end, const Ref<StyleBox>& p_stylebox);
 	void draw_stylebox_or_rect(const Ref<StyleBox>& p_stylebox, const Rect2& p_rect, const Color& p_fallback_color);
+	void draw_paragraph_images(const Ref<TextParagraph>& p_paragraph, const Rect2& p_text_rect, const HashMap<String, Ref<Texture2D>>& p_image_map);
 	void draw_span_decorations(const Ref<TextParagraph>& p_paragraph, const Rect2& p_text_rect, const std::vector<MarkdownInlineSpan>& p_spans, int64_t p_global_start, bool p_draw_code_backgrounds, bool p_draw_link_underlines);
 	void draw_paragraph_text(const Ref<TextParagraph>& p_paragraph, const Rect2& p_text_rect, const std::vector<MarkdownInlineSpan>& p_spans, int64_t p_global_start, const Color& p_default_color);
 	int64_t hit_test_document(const Vector2& p_position) const;
 	String link_uri_at_position(const Vector2& p_position) const;
 	String link_uri_at_character(int64_t p_character) const;
+	String image_tooltip_at_position(const Vector2& p_position) const;
 	int64_t line_column_to_offset(int32_t p_line, int32_t p_column) const;
 	Vector2i offset_to_line_column(int64_t p_offset) const;
 	bool has_selection() const;

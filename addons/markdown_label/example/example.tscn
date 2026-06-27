@@ -1,0 +1,119 @@
+[gd_scene format=3 uid="uid://ddjwklryg5lj1"]
+
+[node name="Control" type="Control" unique_id=1830400677]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="PanelContainer" type="PanelContainer" parent="." unique_id=576664329]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="MarkdownLabel" type="MarkdownLabel" parent="PanelContainer" unique_id=1842356690]
+text = "# Markdown 语法
+
+[![image](uid://fmmnj4gretid)](https://markdown.com.cn)
+
+## 标题
+# 一级标题
+## 二级标题
+### 三级标题
+#### 四级标题
+##### 五级标题
+###### 六级标题
+
+## 强调
+*斜体文字*
+**粗体文字**
+***粗斜体文字***
+~~删除线文字~~
+==高亮文字==
+
+## 列表
+### 无序列表
+- 项目一
+- 项目二
+  - 子项目 2.1
+  - 子项目 2.2
+* 项目三（星号）
++ 项目四（加号）
+
+### 有序列表
+1. 第一项
+2. 第二项
+   1. 子项 2.1
+   2. 子项 2.2
+3. 第三项
+
+## 任务列表
+- [x] 已完成的任务
+- [ ] 未完成的任务
+- [ ] 待办事项
+
+## 脚注
+
+Here's a simple footnote,[^1] and here's a longer one.[^bignote]
+
+[^1]: This is the first footnote.
+
+[^bignote]: Here's one with multiple paragraphs and code.
+    Indent paragraphs to include them in the footnote.
+    `{ my code }`
+    Add as many paragraphs as you like.
+
+## 引用
+> #### The quarterly results look great!
+>
+> - Revenue was off the chart.
+> - Profits were higher than ever.
+>
+>  *Everything* is going according to **plan**.
+
+## 代码
+### 行内代码
+使用 `print(\"Hello World\")` 函数输出内容。
+
+### 代码块
+```gdscript
+func _ready() -> void:
+    print(\"Markdown!\")
+```
+
+## 链接
+[示例链接](https://www.example.com)
+
+<https://www.example.com>
+
+## 表格
+| Syntax      | Description |
+| ----------- | ----------- |
+| Header      | Title       |
+| Paragraph   | Text        |
+
+### 对齐
+
+| Syntax      | Description | Test Text     |
+| :---        |    :----:   |          ---: |
+| Header      | Title       | Here's this   |
+| Paragraph   | Text        | And more      |
+
+## 转义字符
+\\* 这不会被解析为斜体 \\*
+
+\\# 这不是标题
+
+## 分割线
+
+***
+
+---
+
+_________________"
+layout_mode = 2

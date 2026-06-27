@@ -29,7 +29,7 @@ struct MarkdownThemeCache {
 		int32_t paragraph_separation = 10;
 		int32_t list_indent = 26;
 		int32_t list_marker_gap = 6;
-		int32_t table_striped = 0;
+		int32_t table_striped = 1;
 		int32_t footnote_space_before = 16;
 		int32_t footnote_line_separation = 2;
 	} constant;
@@ -39,7 +39,7 @@ struct MarkdownThemeCache {
 		int32_t code = 16;
 		int32_t code_block = 16;
 		int32_t list_marker = 16;
-		int32_t heading[6] = { 28, 24, 21, 19, 17, 15 };
+		int32_t heading[6] = { 36, 26, 20, 18, 12, 10 };
 		int32_t table_header = 16;
 		int32_t table_cell = 16;
 		int32_t footnote_ref = 12;
@@ -49,18 +49,18 @@ struct MarkdownThemeCache {
 	struct Colors {
 		Color text = Color(1.0f, 1.0f, 1.0f, 1.0f);
 		Color link = Color(0.36f, 0.62f, 1.0f, 1.0f);
-		Color code_text = Color(0.86f, 0.88f, 0.91f, 1.0f);
-		Color code_block = Color(0.86f, 0.88f, 0.91f, 1.0f);
+		Color code_text = Color(1.0f, 1.0f, 1.0f, 1.0f);
+		Color code_block = Color(1.0f, 1.0f, 1.0f, 1.0f);
 		Color highlight = Color(1.0f, 0.92f, 0.35f, 0.5f);
-		Color highlight_font = Color(1.0f, 1.0f, 1.0f, 1.0f);
-		Color strikethrough = Color(0.7f, 0.7f, 0.7f, 1.0f);
+		Color highlight_font = Color(1.0f, 0.700f, 0.211f, 1.0f);
+		Color strikethrough = Color(1.0f, 1.0f, 1.0f, 1.0f);
 		Color heading[6];
-		Color selection_color = Color(0.1f, 0.1f, 1.0f, 0.8f);
+		Color selection_color = Color(0.102f, 0.102f, 1.0f, 0.8f);
 		Color list_marker = Color(1.0f, 1.0f, 1.0f, 1.0f);
 		Color table_header_font = Color(1.0f, 1.0f, 1.0f, 1.0f);
 		Color table_cell_font = Color(1.0f, 1.0f, 1.0f, 1.0f);
-		Color footnote_ref = Color(0.36f, 0.62f, 1.0f, 1.0f);
-		Color footnote_text = Color(0.86f, 0.88f, 0.91f, 1.0f);
+		Color footnote_ref = Color(0.809f, 0.809f, 0.809f, 1.0f);
+		Color footnote_text = Color(0.875f, 0.875f, 0.875f, 0.502f);
 	} color;
 
 	struct Fonts {

@@ -1,0 +1,159 @@
+[gd_resource type="Theme" format=3 uid="uid://b3kuthod8q46o"]
+
+[sub_resource type="SystemFont" id="SystemFont_4g44v"]
+font_names = PackedStringArray("Sans-Serif")
+font_weight = 600
+subpixel_positioning = 0
+
+[sub_resource type="SystemFont" id="SystemFont_mmiqc"]
+font_names = PackedStringArray("Sans-Serif")
+font_italic = true
+font_weight = 600
+
+[sub_resource type="FontVariation" id="FontVariation_yrhcw"]
+base_font = SubResource("SystemFont_mmiqc")
+variation_transform = Transform2D(1, 0.3, 0, 1, 0, 0)
+
+[sub_resource type="SystemFont" id="SystemFont_1df28"]
+font_names = PackedStringArray("Monospace")
+
+[sub_resource type="SystemFont" id="SystemFont_tmptv"]
+font_names = PackedStringArray("Sans-Serif")
+
+[sub_resource type="SystemFont" id="SystemFont_px6ft"]
+font_names = PackedStringArray("Sans-Serif")
+font_italic = true
+
+[sub_resource type="FontVariation" id="FontVariation_tmptv"]
+base_font = SubResource("SystemFont_px6ft")
+variation_transform = Transform2D(1, 0.3, 0, 1, 0, 0)
+
+[sub_resource type="SystemFont" id="SystemFont_yrhcw"]
+font_names = PackedStringArray("Sans-Serif")
+subpixel_positioning = 0
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_yrhcw"]
+content_margin_left = 16.0
+content_margin_top = 16.0
+content_margin_right = 8.0
+content_margin_bottom = 16.0
+bg_color = Color(0, 0, 0, 0.19607843)
+draw_center = false
+border_width_left = 2
+border_color = Color(0.45840496, 0.45840508, 0.45840478, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_1df28"]
+content_margin_left = 16.0
+content_margin_top = 16.0
+content_margin_right = 8.0
+content_margin_bottom = 16.0
+bg_color = Color(0, 0, 0, 0.19607843)
+border_width_left = 2
+border_color = Color(0.45840496, 0.45840508, 0.45840478, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_px6ft"]
+content_margin_left = 8.0
+content_margin_top = 8.0
+content_margin_right = 8.0
+content_margin_bottom = 8.0
+bg_color = Color(0, 0, 0, 0.6)
+corner_radius_top_left = 3
+corner_radius_top_right = 3
+corner_radius_bottom_right = 3
+corner_radius_bottom_left = 3
+corner_detail = 5
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_mmiqc"]
+content_margin_left = 4.0
+content_margin_right = 4.0
+bg_color = Color(0.6, 0.6, 0.6, 0.39215687)
+corner_radius_top_left = 2
+corner_radius_top_right = 2
+corner_radius_bottom_right = 2
+corner_radius_bottom_left = 2
+corner_detail = 3
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_tmptv"]
+content_margin_left = 4.0
+content_margin_right = 4.0
+bg_color = Color(0.6, 0.6, 0.6, 0.39215687)
+corner_radius_top_left = 2
+corner_radius_top_right = 2
+corner_radius_bottom_right = 2
+corner_radius_bottom_left = 2
+corner_detail = 3
+
+[sub_resource type="StyleBoxLine" id="StyleBoxLine_j3pel"]
+color = Color(0.5370113, 0.5370113, 0.5370113, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_5t1r3"]
+content_margin_left = 4.0
+content_margin_top = 4.0
+content_margin_right = 4.0
+content_margin_bottom = 4.0
+bg_color = Color(1, 1, 1, 0.19607843)
+draw_center = false
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_n8wo2"]
+content_margin_left = 4.0
+content_margin_top = 4.0
+content_margin_right = 4.0
+content_margin_bottom = 4.0
+draw_center = false
+border_width_bottom = 1
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_4g44v"]
+bg_color = Color(0, 0, 0, 0.6)
+corner_radius_top_left = 3
+corner_radius_top_right = 3
+corner_radius_bottom_right = 3
+corner_radius_bottom_left = 3
+corner_detail = 5
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_cenje"]
+content_margin_left = 4.0
+content_margin_top = 4.0
+content_margin_right = 4.0
+content_margin_bottom = 4.0
+bg_color = Color(1, 1, 1, 0.023529412)
+
+[resource]
+MarkdownLabel/colors/code_block_font_color = Color(1, 1, 1, 1)
+MarkdownLabel/colors/code_text_font_color = Color(1, 1, 1, 1)
+MarkdownLabel/colors/footnote_ref_font_color = Color(0.8089983, 0.8089983, 0.8089982, 1)
+MarkdownLabel/colors/footnote_text_font_color = Color(0.8745098, 0.8745098, 0.8745098, 0.5019608)
+MarkdownLabel/colors/highlight_font_color = Color(1, 0.7000593, 0.21077639, 1)
+MarkdownLabel/colors/selection_color = Color(0.101960786, 0.101960786, 1, 0.8)
+MarkdownLabel/colors/strikethrough_color = Color(1, 1, 1, 1)
+MarkdownLabel/constants/h1_font_size = 36
+MarkdownLabel/constants/h2_font_size = 26
+MarkdownLabel/constants/h3_font_size = 20
+MarkdownLabel/constants/h4_font_size = 18
+MarkdownLabel/constants/h5_font_size = 12
+MarkdownLabel/constants/h6_font_size = 10
+MarkdownLabel/constants/table_striped = 1
+MarkdownLabel/constants/text_font_size = 16
+MarkdownLabel/fonts/bold_font = SubResource("SystemFont_4g44v")
+MarkdownLabel/fonts/bold_italic_font = SubResource("FontVariation_yrhcw")
+MarkdownLabel/fonts/code_text_font = SubResource("SystemFont_1df28")
+MarkdownLabel/fonts/footnote_ref_font = SubResource("SystemFont_1df28")
+MarkdownLabel/fonts/footnote_text_font = SubResource("SystemFont_tmptv")
+MarkdownLabel/fonts/h1_font = SubResource("SystemFont_4g44v")
+MarkdownLabel/fonts/h2_font = SubResource("SystemFont_4g44v")
+MarkdownLabel/fonts/h3_font = SubResource("SystemFont_4g44v")
+MarkdownLabel/fonts/h4_font = SubResource("SystemFont_4g44v")
+MarkdownLabel/fonts/h5_font = SubResource("SystemFont_4g44v")
+MarkdownLabel/fonts/h6_font = SubResource("SystemFont_4g44v")
+MarkdownLabel/fonts/italic_font = SubResource("FontVariation_tmptv")
+MarkdownLabel/fonts/table_header_font = SubResource("SystemFont_4g44v")
+MarkdownLabel/fonts/text_font = SubResource("SystemFont_yrhcw")
+MarkdownLabel/styles/blockquote_nested = SubResource("StyleBoxFlat_yrhcw")
+MarkdownLabel/styles/blockquote_panel = SubResource("StyleBoxFlat_1df28")
+MarkdownLabel/styles/code_block_panel = SubResource("StyleBoxFlat_px6ft")
+MarkdownLabel/styles/highlight = SubResource("StyleBoxFlat_mmiqc")
+MarkdownLabel/styles/inline_code = SubResource("StyleBoxFlat_tmptv")
+MarkdownLabel/styles/separator = SubResource("StyleBoxLine_j3pel")
+MarkdownLabel/styles/table_cell_panel = SubResource("StyleBoxFlat_5t1r3")
+MarkdownLabel/styles/table_header_panel = SubResource("StyleBoxFlat_n8wo2")
+MarkdownLabel/styles/table_panel = SubResource("StyleBoxFlat_4g44v")
+MarkdownLabel/styles/table_striped_panel = SubResource("StyleBoxFlat_cenje")

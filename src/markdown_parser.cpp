@@ -694,6 +694,26 @@ MarkdownInlineSpanParseResult parse_inline_spans(const String& p_text) {
 			continue;
 		}
 
+		if (pos + 2 < len && raw[pos] == '*' && raw[pos + 1] == '*' && raw[pos + 2] == '*' && (pos + 3 >= len || raw[pos + 3] != '*')) {
+			size_t close_pos = find_str(pos + 3, "***");
+			if (close_pos != std::string::npos && close_pos > pos + 3) {
+				String inner = String::utf8(raw.data() + pos + 3, static_cast<int64_t>(close_pos - pos - 3));
+				MarkdownInlineSpanParseResult inner_result = parse_inline_spans(inner);
+				for (MarkdownInlineSpan& span : inner_result.spans) {
+					span.bold = true;
+					span.italic = true;
+					span.start += static_cast<int64_t>(output.length());
+					span.end += static_cast<int64_t>(output.length());
+				}
+				output += inner_result.output_text;
+				for (const MarkdownInlineSpan& span : inner_result.spans) {
+					append_span(span);
+				}
+				pos = close_pos + 3;
+				continue;
+			}
+		}
+
 		if (pos + 1 < len && raw[pos] == '*' && raw[pos + 1] == '*') {
 			size_t close_pos = find_str(pos + 2, "**");
 			if (close_pos != std::string::npos && close_pos > pos + 2) {
@@ -974,6 +994,16 @@ std::vector<MarkdownBlock> parse_markdown_blocks(const String& p_text, const Mar
 			return cells;
 			};
 
+		// Helper: parse column alignment from a separator cell
+		auto parse_alignment = [](const String& p_cell) -> int32_t {
+			String trimmed = p_cell.strip_edges();
+			const bool col_start = trimmed.length() > 0 && trimmed[0] == ':';
+			const bool col_end = trimmed.length() > 1 && trimmed[trimmed.length() - 1] == ':';
+			if (col_start && col_end) return 1; // HORIZONTAL_ALIGNMENT_CENTER
+			if (col_end) return 2;              // HORIZONTAL_ALIGNMENT_RIGHT
+			return 0;                           // HORIZONTAL_ALIGNMENT_LEFT (default)
+			};
+
 		// Table detection
 		if (line.strip_edges().begins_with("|")) {
 			PackedStringArray first_cells = parse_table_cells(line);
@@ -983,6 +1013,12 @@ std::vector<MarkdownBlock> parse_markdown_blocks(const String& p_text, const Mar
 				block.type = MARKDOWN_BLOCK_TABLE;
 				block.header_rows = 1;
 				block.columns = first_cells.size();
+
+				PackedStringArray sep_cells = parse_table_cells(lines[index + 1]);
+				for (int32_t c = 0; c < block.columns; c++) {
+					block.column_alignments.push_back(c < sep_cells.size() ? parse_alignment(sep_cells[c]) : 0);
+				}
+
 				block.rows.push_back(first_cells);
 				index += 2;
 				while (index < lines.size()) {

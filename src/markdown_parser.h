@@ -34,6 +34,7 @@ struct MarkdownBlock {
 	String argument;
 	PackedStringArray items;
 	std::vector<PackedStringArray> rows;
+	std::vector<int32_t> column_alignments;
 	int32_t level = 0;
 	int32_t columns = 0;
 	int32_t header_rows = 0;

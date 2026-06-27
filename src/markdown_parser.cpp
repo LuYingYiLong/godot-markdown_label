@@ -868,9 +868,10 @@ MarkdownInlineSpanParseResult parse_inline_spans(const String& p_text) {
 	return result;
 }
 
-std::vector<MarkdownBlock> parse_markdown_blocks(const String& p_text, const MarkdownParserState* p_initial_state, int32_t p_max_lines) {
+MarkdownParseResult parse_markdown_document(const String& p_text, const MarkdownParserState* p_initial_state, int32_t p_max_lines) {
 	std::vector<String> lines = split_lines(p_text);
-	std::vector<MarkdownBlock> blocks;
+	MarkdownParseResult result;
+	std::vector<MarkdownBlock>& blocks = result.blocks;
 
 	MarkdownParserState state;
 	if (p_initial_state != nullptr) {
@@ -1328,7 +1329,14 @@ std::vector<MarkdownBlock> parse_markdown_blocks(const String& p_text, const Mar
 		blocks.push_back(footnote_block);
 	}
 
-	return blocks;
+	state.stable_block_count = static_cast<int32_t>(blocks.size());
+	state.stable_source_offset = p_text.length();
+	result.state = state;
+	return result;
+}
+
+std::vector<MarkdownBlock> parse_markdown_blocks(const String& p_text, const MarkdownParserState* p_initial_state, int32_t p_max_lines) {
+	return parse_markdown_document(p_text, p_initial_state, p_max_lines).blocks;
 }
 
 int32_t find_reparse_line(const std::vector<MarkdownBlock>& p_blocks, const std::vector<String>& p_lines, const MarkdownParserState& p_state, int32_t p_max_unstable_lines) {
@@ -1348,19 +1356,11 @@ int32_t find_reparse_line(const std::vector<MarkdownBlock>& p_blocks, const std:
 	int32_t tail_lines = std::min<int32_t>(p_max_unstable_lines, static_cast<int32_t>(p_lines.size()) - last_block_line);
 	int32_t reparse_start = std::max<int32_t>(0, static_cast<int32_t>(p_lines.size()) - tail_lines);
 
-	int32_t last_stable = 0;
-	for (int32_t i = static_cast<int32_t>(p_blocks.size()) - 1; i >= 0; i--) {
-		if (p_blocks[i].line - 1 < reparse_start) {
-			last_stable = p_blocks[i].line;
-			break;
-		}
-	}
-
 	return reparse_start;
 }
 
 void rebuild_tail(const String& p_raw_text, int32_t p_reparse_line, std::vector<MarkdownBlock>& r_blocks, MarkdownParserState& r_state) {
-	r_blocks.erase(std::remove_if(r_blocks.begin(), r_blocks.end(), [p_reparse_line](const MarkdownBlock& b) { return b.line > p_reparse_line + 1; }), r_blocks.end());
+	r_blocks.erase(std::remove_if(r_blocks.begin(), r_blocks.end(), [p_reparse_line](const MarkdownBlock& b) { return b.line >= p_reparse_line + 1; }), r_blocks.end());
 
 	r_state.reset();
 
@@ -1373,11 +1373,15 @@ void rebuild_tail(const String& p_raw_text, int32_t p_reparse_line, std::vector<
 		tail_text += lines[i];
 	}
 
-	std::vector<MarkdownBlock> tail_blocks = parse_markdown_blocks(tail_text);
+	MarkdownParseResult tail_result = parse_markdown_document(tail_text);
+	std::vector<MarkdownBlock> tail_blocks = tail_result.blocks;
 
 	for (MarkdownBlock& block : tail_blocks) {
 		block.line += p_reparse_line;
 	}
 
+	r_state = tail_result.state;
+	r_state.stable_block_count = static_cast<int32_t>(r_blocks.size() + tail_blocks.size());
+	r_state.stable_source_offset = p_raw_text.length();
 	r_blocks.insert(r_blocks.end(), tail_blocks.begin(), tail_blocks.end());
 }

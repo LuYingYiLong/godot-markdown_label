@@ -134,6 +134,7 @@ private:
 	MarkdownParserState parser_state;
 	std::vector<MarkdownBlock> cached_blocks;
 	bool streaming_enabled = false;
+	bool layout_prefix_reuse_requested = false;
 	int32_t max_unstable_lines = 32;
 
 	void mark_layout_dirty();
@@ -147,6 +148,8 @@ private:
 	void draw_paragraph_images(const Ref<TextParagraph>& p_paragraph, const Rect2& p_text_rect, const HashMap<String, Ref<Texture2D>>& p_image_map);
 	void draw_span_decorations(const Ref<TextParagraph>& p_paragraph, const Rect2& p_text_rect, const std::vector<MarkdownInlineSpan>& p_spans, int64_t p_global_start, bool p_draw_code_backgrounds, bool p_draw_link_underlines);
 	void draw_paragraph_text(const Ref<TextParagraph>& p_paragraph, const Rect2& p_text_rect, const std::vector<MarkdownInlineSpan>& p_spans, int64_t p_global_start, const Color& p_default_color);
+	Rect2 get_visible_content_rect() const;
+	bool is_rect_visible(const Rect2& p_rect, const Rect2& p_visible_rect) const;
 	int64_t hit_test_document(const Vector2& p_position) const;
 	String link_uri_at_position(const Vector2& p_position) const;
 	String link_uri_at_character(int64_t p_character) const;
@@ -207,6 +210,7 @@ private:
 
 	void ensure_controls();
 	void apply_theme_settings();
+	void on_scroll_value_changed(double p_value);
 
 protected:
 	static void _bind_methods();

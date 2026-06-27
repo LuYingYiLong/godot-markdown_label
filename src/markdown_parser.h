@@ -196,8 +196,14 @@ struct MarkdownParserState {
 	}
 };
 
+struct MarkdownParseResult {
+	std::vector<MarkdownBlock> blocks;
+	MarkdownParserState state;
+};
+
 // Parser functions
 std::vector<String> split_lines(const String &p_text);
+MarkdownParseResult parse_markdown_document(const String &p_text, const MarkdownParserState *p_initial_state = nullptr, int32_t p_max_lines = INT_MAX);
 std::vector<MarkdownBlock> parse_markdown_blocks(const String &p_text, const MarkdownParserState *p_initial_state = nullptr, int32_t p_max_lines = INT_MAX);
 
 // Inline span parsing result

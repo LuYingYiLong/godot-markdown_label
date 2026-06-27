@@ -1,5 +1,7 @@
 [gd_scene format=3 uid="uid://ddjwklryg5lj1"]
 
+[ext_resource type="Theme" uid="uid://b3kuthod8q46o" path="res://addons/markdown_label/example/theme.tres" id="1_kh8ff"]
+
 [node name="Control" type="Control" unique_id=1830400677]
 layout_mode = 3
 anchors_preset = 15
@@ -117,3 +119,4 @@ func _ready() -> void:
 
 _________________"
 layout_mode = 2
+theme = ExtResource("1_kh8ff")

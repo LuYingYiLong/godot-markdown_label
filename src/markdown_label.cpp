@@ -501,6 +501,7 @@ void MarkdownLabelCanvas::set_markdown_text(const String& p_text) {
 	selection_dragged = false;
 	parser_state.reset();
 	cached_blocks.clear();
+	layout_prefix_reuse_requested = false;
 	set_process_internal(false);
 	mark_layout_dirty();
 }
@@ -512,10 +513,14 @@ void MarkdownLabelCanvas::append_text_incremental(const String& p_delta) {
 		std::vector<String> all_lines = split_lines(raw_text);
 		int32_t reparse_line = find_reparse_line(cached_blocks, all_lines, parser_state, max_unstable_lines);
 		rebuild_tail(raw_text, reparse_line, cached_blocks, parser_state);
+		layout_prefix_reuse_requested = true;
 	}
 	else {
 		parser_state.reset();
-		cached_blocks = parse_markdown_blocks(raw_text);
+		MarkdownParseResult result = parse_markdown_document(raw_text);
+		cached_blocks = result.blocks;
+		parser_state = result.state;
+		layout_prefix_reuse_requested = false;
 	}
 
 	mark_layout_dirty();
@@ -523,7 +528,10 @@ void MarkdownLabelCanvas::append_text_incremental(const String& p_delta) {
 
 void MarkdownLabelCanvas::finish_stream() {
 	parser_state.reset();
-	cached_blocks = parse_markdown_blocks(raw_text);
+	MarkdownParseResult result = parse_markdown_document(raw_text);
+	cached_blocks = result.blocks;
+	parser_state = result.state;
+	layout_prefix_reuse_requested = false;
 	mark_layout_dirty();
 }
 
@@ -534,6 +542,7 @@ void MarkdownLabelCanvas::clear_document() {
 	lines.clear();
 	cached_blocks.clear();
 	parser_state.reset();
+	layout_prefix_reuse_requested = false;
 	rendered_block_count = 0;
 	selection_anchor = 0;
 	selection_caret = 0;
@@ -730,11 +739,16 @@ void MarkdownLabelCanvas::rebuild_layout() {
 	}
 
 	layout_dirty = false;
+	const bool can_reuse_layout_prefix = layout_prefix_reuse_requested && streaming_enabled && !items.empty() && std::abs(width - layout_width) < 0.01f;
+	const std::vector<MarkdownCanvasItem> previous_items = can_reuse_layout_prefix ? items : std::vector<MarkdownCanvasItem>();
+	const std::vector<MarkdownCanvasLine> previous_lines = can_reuse_layout_prefix ? lines : std::vector<MarkdownCanvasLine>();
+	const String previous_plain_text = can_reuse_layout_prefix ? plain_text : String();
 	layout_width = width;
 	items.clear();
 	lines.clear();
 	plain_text = String();
 	rendered_block_count = 0;
+	anchor_offsets.clear();
 	footnote_reference_offsets.clear();
 	footnote_definition_offsets.clear();
 
@@ -799,6 +813,24 @@ void MarkdownLabelCanvas::rebuild_layout() {
 		}
 	};
 
+	auto register_footnote_numbers = [&](const std::vector<MarkdownInlineSpan>& p_spans) {
+		for (const MarkdownInlineSpan& span : p_spans) {
+			if (span.footnote_ref && !span.footnote_id.is_empty() && !footnote_numbers.has(span.footnote_id)) {
+				footnote_numbers[span.footnote_id] = span.footnote_number > 0 ? span.footnote_number : static_cast<int32_t>(footnote_numbers.size()) + 1;
+			}
+		}
+	};
+
+	auto register_item_footnote_numbers = [&](const MarkdownCanvasItem& p_item) {
+		register_footnote_numbers(p_item.spans);
+		for (const MarkdownTableCell& cell : p_item.cells) {
+			register_footnote_numbers(cell.spans);
+		}
+		for (const MarkdownBlockquoteLine& line : p_item.quote_lines) {
+			register_footnote_numbers(line.spans);
+		}
+	};
+
 	float y = 0.0f;
 
 	std::vector<MarkdownBlock> blocks;
@@ -806,11 +838,55 @@ void MarkdownLabelCanvas::rebuild_layout() {
 		blocks = cached_blocks;
 	}
 	else {
-		blocks = parse_markdown_blocks(raw_text);
+		MarkdownParseResult result = parse_markdown_document(raw_text);
+		blocks = result.blocks;
 		cached_blocks = blocks;
+		parser_state = result.state;
 	}
 
-	for (int32_t block_idx = 0; block_idx < static_cast<int32_t>(blocks.size()); block_idx++) {
+	int32_t block_start_index = 0;
+	if (can_reuse_layout_prefix) {
+		const int32_t max_reuse = std::min<int32_t>(static_cast<int32_t>(blocks.size()), static_cast<int32_t>(previous_items.size()));
+		for (int32_t reuse_index = 0; reuse_index < max_reuse; reuse_index++) {
+			const MarkdownBlock& block = blocks[reuse_index];
+			if (block.type == MARKDOWN_BLOCK_FOOTNOTES) {
+				break;
+			}
+
+			const uint64_t block_hash = compute_block_hash(block);
+			const MarkdownCanvasItem& previous_item = previous_items[reuse_index];
+			if (previous_item.type != block.type || previous_item.content_hash != block_hash) {
+				break;
+			}
+
+			items.push_back(previous_item);
+			register_item_footnote_numbers(previous_item);
+			record_footnote_reference_offsets(previous_item.paragraph, previous_item.text_rect, previous_item.spans);
+			for (const MarkdownTableCell& cell : previous_item.cells) {
+				record_footnote_reference_offsets(cell.paragraph, cell.text_rect, cell.spans);
+			}
+			for (const MarkdownBlockquoteLine& line : previous_item.quote_lines) {
+				record_footnote_reference_offsets(line.paragraph, line.text_rect, line.spans);
+			}
+			if (!previous_item.anchor.is_empty()) {
+				anchor_offsets[previous_item.anchor] = previous_item.rect.position.y;
+			}
+			for (const MarkdownCanvasLine& line : previous_lines) {
+				if (line.item_index == reuse_index) {
+					lines.push_back(line);
+				}
+			}
+			plain_text = previous_plain_text.substr(0, previous_item.global_end);
+			const char* spacing_type = block_spacing_type(block);
+			const String spacing_after_name = String(spacing_type) + "_space_after";
+			const int32_t block_spacing_after = std::max<int32_t>(0, get_theme_constant_or(label, "MarkdownLabel", StringName(spacing_after_name), theme_cache.constant.paragraph_separation));
+			y = previous_item.rect.get_end().y + static_cast<float>(block_spacing_after);
+			rendered_block_count++;
+			block_start_index = reuse_index + 1;
+		}
+	}
+
+	for (int32_t block_idx = block_start_index; block_idx < static_cast<int32_t>(blocks.size()); block_idx++) {
 		const MarkdownBlock& block = blocks[block_idx];
 		MarkdownCanvasItem item;
 		String item_text;
@@ -831,6 +907,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 		item.background_color = Color(0, 0, 0, 0);
 		item.border_color = Color(0, 0, 0, 0);
 		item.type = block.type;
+		item.content_hash = compute_block_hash(block);
 
 		switch (block.type) {
 		case MARKDOWN_BLOCK_HEADING: {
@@ -1344,9 +1421,6 @@ void MarkdownLabelCanvas::rebuild_layout() {
 		item.text = item_text;
 		item.spans = item_spans;
 
-		uint64_t block_hash = compute_block_hash(block);
-		item.content_hash = block_hash;
-
 		item.paragraph.instantiate();
 		item.paragraph->set_width(std::max<float>(1.0f, width - left_padding - right_padding));
 		item.paragraph->set_line_spacing(item.type == MARKDOWN_BLOCK_FOOTNOTES ? theme_cache.constant.footnote_line_separation : theme_cache.constant.line_separation);
@@ -1445,6 +1519,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 		search_match_start = -1;
 		search_match_end = -1;
 	}
+	layout_prefix_reuse_requested = false;
 }
 
 void MarkdownLabelCanvas::draw_selection_for_item(const MarkdownCanvasItem& p_item) {
@@ -1720,6 +1795,23 @@ void MarkdownLabelCanvas::draw_paragraph_text(const Ref<TextParagraph>& p_paragr
 	}
 }
 
+Rect2 MarkdownLabelCanvas::get_visible_content_rect() const {
+	const float width = std::max<float>(1.0f, get_size().x);
+	if (label == nullptr) {
+		return Rect2(0.0f, 0.0f, width, content_height);
+	}
+
+	VScrollBar* v_scroll = label->get_v_scroll_bar();
+	const float visible_y = v_scroll == nullptr ? 0.0f : static_cast<float>(v_scroll->get_value());
+	const float visible_height = std::max<float>(1.0f, label->get_size().y);
+	const float buffer = 256.0f;
+	return Rect2(0.0f, std::max<float>(0.0f, visible_y - buffer), width, visible_height + buffer * 2.0f);
+}
+
+bool MarkdownLabelCanvas::is_rect_visible(const Rect2& p_rect, const Rect2& p_visible_rect) const {
+	return p_rect.intersects(p_visible_rect) || p_visible_rect.encloses(p_rect) || p_rect.encloses(p_visible_rect);
+}
+
 void MarkdownLabelCanvas::_notification(int p_what) {
 	if (p_what == NOTIFICATION_RESIZED || p_what == NOTIFICATION_THEME_CHANGED) {
 		mark_layout_dirty();
@@ -1776,8 +1868,12 @@ void MarkdownLabelCanvas::_notification(int p_what) {
 	}
 
 	rebuild_layout();
+	const Rect2 visible_rect = get_visible_content_rect();
 
 	for (const MarkdownCanvasItem& item : items) {
+		if (!is_rect_visible(item.rect, visible_rect)) {
+			continue;
+		}
 		if (item.type == MARKDOWN_BLOCK_BLOCKQUOTE) {
 			draw_stylebox_or_rect(item.panel_stylebox, item.rect, item.background_color);
 
@@ -1813,6 +1909,9 @@ void MarkdownLabelCanvas::_notification(int p_what) {
 			}
 
 			for (const MarkdownBlockquoteLine& line : item.quote_lines) {
+				if (!is_rect_visible(line.rect, visible_rect)) {
+					continue;
+				}
 				if (line.stylebox.is_valid()) {
 					draw_stylebox_or_rect(line.stylebox, line.rect, Color());
 				}
@@ -1841,6 +1940,9 @@ void MarkdownLabelCanvas::_notification(int p_what) {
 			if (item.type == MARKDOWN_BLOCK_TABLE) {
 				draw_stylebox_or_rect(item.panel_stylebox, item.rect, Color());
 				for (const MarkdownTableCell& cell : item.cells) {
+					if (!is_rect_visible(cell.rect, visible_rect)) {
+						continue;
+					}
 					draw_stylebox_or_rect(cell.stylebox, cell.rect, Color(0, 0, 0, 0));
 					draw_span_decorations(cell.paragraph, cell.text_rect, cell.spans, cell.global_start, true, false);
 					if (search_match_start >= 0 && search_match_start < cell.global_end && search_match_end > cell.global_start) {
@@ -1887,52 +1989,76 @@ int64_t MarkdownLabelCanvas::hit_test_document(const Vector2& p_position) const 
 		return 0;
 	}
 
-	for (const MarkdownCanvasItem& item : items) {
-		if (p_position.y < item.rect.position.y) {
-			return item.global_start;
+	if (p_position.y < items.front().rect.position.y) {
+		return items.front().global_start;
+	}
+	if (p_position.y > items.back().rect.get_end().y) {
+		return plain_text.length();
+	}
+
+	int32_t low = 0;
+	int32_t high = static_cast<int32_t>(items.size()) - 1;
+	int32_t item_index = high;
+	while (low <= high) {
+		const int32_t middle = low + (high - low) / 2;
+		if (p_position.y < items[middle].rect.position.y) {
+			item_index = middle;
+			high = middle - 1;
 		}
-		if (p_position.y <= item.rect.get_end().y) {
-				if (item.type == MARKDOWN_BLOCK_TABLE) {
-					for (const MarkdownTableCell& cell : item.cells) {
-						if (cell.rect.has_point(p_position)) {
-							Vector2 local_position = p_position - cell.text_rect.position;
-							if (!cell.paragraph.is_null() && cell.paragraph->get_line_count() > 0) {
-								float line_y = 0.0f;
-								for (int32_t li = 0; li < cell.paragraph->get_line_count(); li++) {
-									const float line_h = cell.paragraph->get_line_size(li).y + cell.paragraph->get_line_spacing();
-									if (local_position.y < line_y + line_h || li == cell.paragraph->get_line_count() - 1) {
-										local_position.x -= get_alignment_offset(cell.paragraph, li, cell.text_rect.size.x);
-										break;
-									}
-									line_y += line_h;
+		else if (p_position.y > items[middle].rect.get_end().y) {
+			low = middle + 1;
+		}
+		else {
+			item_index = middle;
+			break;
+		}
+	}
+
+	const MarkdownCanvasItem& item = items[item_index];
+	if (p_position.y < item.rect.position.y) {
+		return item.global_start;
+	}
+	if (p_position.y <= item.rect.get_end().y) {
+			if (item.type == MARKDOWN_BLOCK_TABLE) {
+				for (const MarkdownTableCell& cell : item.cells) {
+					if (cell.rect.has_point(p_position)) {
+						Vector2 local_position = p_position - cell.text_rect.position;
+						if (!cell.paragraph.is_null() && cell.paragraph->get_line_count() > 0) {
+							float line_y = 0.0f;
+							for (int32_t li = 0; li < cell.paragraph->get_line_count(); li++) {
+								const float line_h = cell.paragraph->get_line_size(li).y + cell.paragraph->get_line_spacing();
+								if (local_position.y < line_y + line_h || li == cell.paragraph->get_line_count() - 1) {
+									local_position.x -= get_alignment_offset(cell.paragraph, li, cell.text_rect.size.x);
+									break;
 								}
+								line_y += line_h;
 							}
-							const int32_t local_character = std::min<int32_t>(std::max<int32_t>(cell.paragraph->hit_test(local_position), 0), static_cast<int32_t>(cell.global_end - cell.global_start));
-							return cell.global_start + local_character;
 						}
-					}
-					return item.cells.empty() ? item.global_start : item.cells[0].global_start;
-				}
-			if (item.type == MARKDOWN_BLOCK_BLOCKQUOTE) {
-				for (const MarkdownBlockquoteLine& line : item.quote_lines) {
-					if (p_position.y <= line.rect.get_end().y) {
-						if (line.paragraph.is_null()) {
-							return p_position.x < line.rect.get_center().x ? line.global_start : line.global_end;
-						}
-						const Vector2 local_position = p_position - line.text_rect.position;
-						const int32_t local_character = std::min<int32_t>(std::max<int32_t>(line.paragraph->hit_test(local_position), 0), static_cast<int32_t>(line.global_end - line.global_start));
-						return line.global_start + local_character;
+						const int32_t local_character = std::min<int32_t>(std::max<int32_t>(cell.paragraph->hit_test(local_position), 0), static_cast<int32_t>(cell.global_end - cell.global_start));
+						return cell.global_start + local_character;
 					}
 				}
-				return p_position.x < item.rect.get_center().x ? item.global_start : item.global_end;
+				return item.cells.empty() ? item.global_start : item.cells[0].global_start;
 			}
-			if (!item.paragraph.is_valid()) {
-				return p_position.x < item.rect.get_center().x ? item.global_start : item.global_end;
+		if (item.type == MARKDOWN_BLOCK_BLOCKQUOTE) {
+			for (const MarkdownBlockquoteLine& line : item.quote_lines) {
+				if (p_position.y <= line.rect.get_end().y) {
+					if (line.paragraph.is_null()) {
+						return p_position.x < line.rect.get_center().x ? line.global_start : line.global_end;
+					}
+					const Vector2 local_position = p_position - line.text_rect.position;
+					const int32_t local_character = std::min<int32_t>(std::max<int32_t>(line.paragraph->hit_test(local_position), 0), static_cast<int32_t>(line.global_end - line.global_start));
+					return line.global_start + local_character;
+				}
 			}
-			const Vector2 local_position = p_position - item.text_rect.position;
-			const int32_t local_character = std::min<int32_t>(std::max<int32_t>(item.paragraph->hit_test(local_position), 0), static_cast<int32_t>(item.paragraph_global_end - item.paragraph_global_start));
-			return item.paragraph_global_start + local_character;
+			return p_position.x < item.rect.get_center().x ? item.global_start : item.global_end;
 		}
+		if (!item.paragraph.is_valid()) {
+			return p_position.x < item.rect.get_center().x ? item.global_start : item.global_end;
+		}
+		const Vector2 local_position = p_position - item.text_rect.position;
+		const int32_t local_character = std::min<int32_t>(std::max<int32_t>(item.paragraph->hit_test(local_position), 0), static_cast<int32_t>(item.paragraph_global_end - item.paragraph_global_start));
+		return item.paragraph_global_start + local_character;
 	}
 
 	return plain_text.length();
@@ -2322,6 +2448,14 @@ void MarkdownLabel::ensure_controls() {
 	scroll_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	scroll_container->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	add_child(scroll_container, false, Node::INTERNAL_MODE_BACK);
+	VScrollBar* v_scroll = scroll_container->get_v_scroll_bar();
+	if (v_scroll != nullptr) {
+		v_scroll->connect("value_changed", callable_mp(this, &MarkdownLabel::on_scroll_value_changed));
+	}
+	HScrollBar* h_scroll = scroll_container->get_h_scroll_bar();
+	if (h_scroll != nullptr) {
+		h_scroll->connect("value_changed", callable_mp(this, &MarkdownLabel::on_scroll_value_changed));
+	}
 
 	margin_container = memnew(MarginContainer);
 	margin_container->set_name("_MarkdownMargin");
@@ -2343,6 +2477,13 @@ void MarkdownLabel::ensure_controls() {
 	margin_container->add_child(canvas, false, Node::INTERNAL_MODE_BACK);
 
 	apply_theme_settings();
+}
+
+void MarkdownLabel::on_scroll_value_changed(double p_value) {
+	(void)p_value;
+	if (canvas != nullptr) {
+		canvas->queue_redraw();
+	}
 }
 
 void MarkdownLabel::apply_theme_settings() {
@@ -2386,27 +2527,47 @@ String MarkdownLabel::get_markdown_text() const {
 
 void MarkdownLabel::append_text(const String& p_delta) {
 	ensure_controls();
+	bool should_auto_scroll = false;
+	if (auto_scroll && scroll_container != nullptr) {
+		VScrollBar* v_scroll = scroll_container->get_v_scroll_bar();
+		if (v_scroll != nullptr) {
+			const float max_scroll = std::max<float>(0.0f, v_scroll->get_max() - v_scroll->get_page());
+			should_auto_scroll = v_scroll->get_value() >= max_scroll - 24.0f;
+		}
+	}
+
 	raw_text += p_delta;
 	canvas->set_streaming_enabled(streaming_enabled);
 	canvas->set_max_unstable_lines(max_unstable_lines);
 	canvas->append_text_incremental(p_delta);
-	if (auto_scroll && scroll_container != nullptr) {
+	if (should_auto_scroll && scroll_container != nullptr) {
 		VScrollBar* v_scroll = scroll_container->get_v_scroll_bar();
 		if (v_scroll != nullptr) {
-			scroll_container->call_deferred("set_deferred", "scroll_vertical", static_cast<int32_t>(v_scroll->get_max()));
+			const float target_height = canvas == nullptr ? 0.0f : canvas->get_content_height();
+			scroll_container->call_deferred("set_deferred", "scroll_vertical", static_cast<int32_t>(target_height));
 		}
 	}
 	emit_signal("text_changed");
 }
 
 void MarkdownLabel::finish_stream() {
-	if (canvas != nullptr) {
-		canvas->finish_stream();
-	}
+	bool should_auto_scroll = false;
 	if (auto_scroll && scroll_container != nullptr) {
 		VScrollBar* v_scroll = scroll_container->get_v_scroll_bar();
 		if (v_scroll != nullptr) {
-			scroll_container->call_deferred("set_deferred", "scroll_vertical", static_cast<int32_t>(v_scroll->get_max()));
+			const float max_scroll = std::max<float>(0.0f, v_scroll->get_max() - v_scroll->get_page());
+			should_auto_scroll = v_scroll->get_value() >= max_scroll - 24.0f;
+		}
+	}
+
+	if (canvas != nullptr) {
+		canvas->finish_stream();
+	}
+	if (should_auto_scroll && scroll_container != nullptr) {
+		VScrollBar* v_scroll = scroll_container->get_v_scroll_bar();
+		if (v_scroll != nullptr) {
+			const float target_height = canvas == nullptr ? 0.0f : canvas->get_content_height();
+			scroll_container->call_deferred("set_deferred", "scroll_vertical", static_cast<int32_t>(target_height));
 		}
 	}
 }

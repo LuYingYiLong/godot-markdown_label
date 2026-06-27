@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <functional>
 #include <vector>
 
 using namespace godot;
@@ -808,13 +809,6 @@ void MarkdownLabelCanvas::rebuild_layout() {
 			const float nested_top = get_stylebox_margin_or(theme_cache.stylebox.blockquote_nested, SIDE_TOP, 0.0f);
 			const float nested_right = get_stylebox_margin_or(theme_cache.stylebox.blockquote_nested, SIDE_RIGHT, 8.0f);
 			const float nested_bottom = get_stylebox_margin_or(theme_cache.stylebox.blockquote_nested, SIDE_BOTTOM, 0.0f);
-			const PackedStringArray quote_text_lines = block.text.split("\n", true);
-			std::vector<int32_t> quote_depths;
-			quote_depths.reserve(quote_text_lines.size());
-			for (int32_t line_index = 0; line_index < quote_text_lines.size(); line_index++) {
-				const int32_t depth = line_index < static_cast<int32_t>(block.item_levels.size()) ? std::max<int32_t>(1, block.item_levels[line_index]) : 1;
-				quote_depths.push_back(depth);
-			}
 
 			if (!plain_text.is_empty()) {
 				plain_text += "\n\n";
@@ -823,14 +817,11 @@ void MarkdownLabelCanvas::rebuild_layout() {
 			item.paragraph_global_start = item.global_start;
 
 			float quote_y = y + panel_top;
-			for (int32_t line_index = 0; line_index < quote_text_lines.size(); line_index++) {
-				const int32_t depth = quote_depths[line_index];
-				const int32_t previous_depth = line_index > 0 ? quote_depths[line_index - 1] : 1;
-				const int32_t next_depth = line_index + 1 < static_cast<int32_t>(quote_depths.size()) ? quote_depths[line_index + 1] : 1;
-				if (depth > previous_depth) {
-					quote_y += nested_top * static_cast<float>(depth - previous_depth);
-				}
+			bool quote_has_text = false;
+			int32_t last_quote_spacing_after = 0;
 
+			auto get_quote_content_rect = [&](int32_t p_depth) {
+				const int32_t depth = std::max<int32_t>(1, p_depth);
 				float line_left = panel_left;
 				float line_width = std::max<float>(1.0f, width - panel_left - panel_right);
 				if (depth > 1) {
@@ -838,40 +829,247 @@ void MarkdownLabelCanvas::rebuild_layout() {
 					line_left = nested_rect_left + nested_left;
 					line_width = std::max<float>(1.0f, width - nested_rect_left - nested_left - nested_right - panel_right);
 				}
+				return Rect2(line_left, 0.0f, line_width, 0.0f);
+			};
 
-				MarkdownInlineSpanParseResult parsed = parse_inline_spans(quote_text_lines[line_index]);
-				const String paragraph_text = parsed.output_text.is_empty() ? String(" ") : parsed.output_text;
+			auto add_quote_depth_spacing = [&](int32_t p_depth) {
+				if (item.quote_lines.empty()) {
+					return;
+				}
+
+				const int32_t previous_depth = std::max<int32_t>(1, item.quote_lines.back().depth);
+				const int32_t depth = std::max<int32_t>(1, p_depth);
+				if (depth > previous_depth) {
+					quote_y += nested_top * static_cast<float>(depth - previous_depth);
+				}
+				else if (depth < previous_depth) {
+					quote_y += nested_bottom * static_cast<float>(previous_depth - depth);
+				}
+			};
+
+			auto append_quote_plain_text = [&](MarkdownBlockquoteLine& r_line) {
+				if (quote_has_text) {
+					plain_text += "\n\n";
+				}
+				quote_has_text = true;
+				r_line.global_start = plain_text.length();
+				plain_text += r_line.text;
+				r_line.global_end = plain_text.length();
+			};
+
+			auto add_quote_line = [&](MarkdownBlockquoteLine& r_line, int32_t p_block_spacing_before, int32_t p_block_spacing_after) {
+				add_quote_depth_spacing(r_line.depth);
+				if (!item.quote_lines.empty()) {
+					quote_y += static_cast<float>(p_block_spacing_before);
+				}
+
+				append_quote_plain_text(r_line);
+				item.blockquote_depth = std::max<int32_t>(item.blockquote_depth, r_line.depth);
+				item.quote_lines.push_back(r_line);
+				last_quote_spacing_after = p_block_spacing_after;
+				quote_y = item.quote_lines.back().rect.get_end().y + static_cast<float>(p_block_spacing_after);
+			};
+
+			std::function<void(const MarkdownBlock&, int32_t)> append_quote_block;
+			append_quote_block = [&](const MarkdownBlock& p_child, int32_t p_depth) {
+				if (p_child.type == MARKDOWN_BLOCK_BLOCKQUOTE) {
+					const int32_t child_depth = std::max<int32_t>(1, p_depth + 1);
+					if (p_child.children.empty() && !p_child.text.is_empty()) {
+						MarkdownBlock fallback_child;
+						fallback_child.type = MARKDOWN_BLOCK_PARAGRAPH;
+						fallback_child.text = p_child.text;
+						append_quote_block(fallback_child, child_depth);
+					}
+					for (const MarkdownBlock& nested_child : p_child.children) {
+						append_quote_block(nested_child, child_depth);
+					}
+					return;
+				}
+
+				MarkdownBlock render_block = p_child;
+				if (render_block.type == MARKDOWN_BLOCK_TABLE) {
+					String table_text;
+					for (int32_t row_index = 0; row_index < render_block.rows.size(); row_index++) {
+						if (!table_text.is_empty()) {
+							table_text += "\n";
+						}
+						for (int32_t column_index = 0; column_index < render_block.rows[row_index].size(); column_index++) {
+							if (column_index > 0) {
+								table_text += " | ";
+							}
+							table_text += render_block.rows[row_index][column_index];
+						}
+					}
+					render_block.type = MARKDOWN_BLOCK_PARAGRAPH;
+					render_block.text = table_text;
+				}
+
+				const char* child_spacing_type = block_spacing_type(render_block);
+				const String child_spacing_before_name = String(child_spacing_type) + "_space_before";
+				const String child_spacing_after_name = String(child_spacing_type) + "_space_after";
+				const int32_t child_spacing_before = std::max<int32_t>(0, get_theme_constant_or(label, "MarkdownLabel", StringName(child_spacing_before_name), 0));
+				const int32_t child_spacing_after = std::max<int32_t>(0, get_theme_constant_or(label, "MarkdownLabel", StringName(child_spacing_after_name), quote_line_gap));
 
 				MarkdownBlockquoteLine quote_line;
-				quote_line.text = parsed.output_text;
-				quote_line.spans = parsed.spans;
-				quote_line.depth = depth;
+				quote_line.type = render_block.type;
+				quote_line.depth = std::max<int32_t>(1, p_depth);
+				quote_line.text_color = theme_cache.color.text;
+
+				Ref<Font> quote_font = theme_cache.font.text;
+				int32_t quote_font_size = theme_cache.font_size.text;
+				float local_left_padding = 0.0f;
+				float local_top_padding = 0.0f;
+				float local_right_padding = 0.0f;
+				float local_bottom_padding = 0.0f;
+
+				switch (render_block.type) {
+				case MARKDOWN_BLOCK_HEADING: {
+					const int32_t heading_index = std::min<int32_t>(std::max<int32_t>(render_block.level - 1, 0), 5);
+					quote_font = theme_cache.font.heading[heading_index];
+					quote_font_size = theme_cache.font_size.heading[heading_index];
+					quote_line.text_color = theme_cache.color.heading[heading_index];
+					MarkdownInlineSpanParseResult parsed = parse_inline_spans(render_block.text);
+					quote_line.text = parsed.output_text;
+					quote_line.spans = parsed.spans;
+				} break;
+				case MARKDOWN_BLOCK_TASK_LIST:
+				case MARKDOWN_BLOCK_UNORDERED_LIST:
+				case MARKDOWN_BLOCK_ORDERED_LIST: {
+					for (int32_t i = 0; i < render_block.items.size(); i++) {
+						if (!quote_line.text.is_empty()) {
+							quote_line.text += "\n";
+						}
+						MarkdownInlineSpanParseResult parsed = parse_inline_spans(render_block.items[i]);
+						const int64_t item_start = quote_line.text.length();
+						quote_line.text += parsed.output_text;
+						for (MarkdownInlineSpan& span : parsed.spans) {
+							span.start += item_start;
+							span.end += item_start;
+							quote_line.spans.push_back(span);
+						}
+					}
+					local_left_padding = static_cast<float>(theme_cache.constant.list_indent) * (1.0f + static_cast<float>(render_block.indent));
+				} break;
+				case MARKDOWN_BLOCK_CODE:
+					quote_line.text = render_block.text;
+					quote_font = theme_cache.font.code_block;
+					quote_font_size = theme_cache.font_size.code_block;
+					quote_line.text_color = theme_cache.color.code_block;
+					quote_line.stylebox = theme_cache.stylebox.code_block_panel;
+					local_left_padding = get_stylebox_margin_or(quote_line.stylebox, SIDE_LEFT, 8.0f);
+					local_top_padding = get_stylebox_margin_or(quote_line.stylebox, SIDE_TOP, 8.0f);
+					local_right_padding = get_stylebox_margin_or(quote_line.stylebox, SIDE_RIGHT, 8.0f);
+					local_bottom_padding = get_stylebox_margin_or(quote_line.stylebox, SIDE_BOTTOM, 8.0f);
+					break;
+				case MARKDOWN_BLOCK_THEMATIC_BREAK:
+					quote_line.stylebox = theme_cache.stylebox.separator;
+					break;
+				case MARKDOWN_BLOCK_IMAGE: {
+					quote_line.text = String("[Image: ") + render_block.argument + "]";
+					MarkdownInlineSpan span;
+					span.text = quote_line.text;
+					span.italic = true;
+					span.start = 0;
+					span.end = quote_line.text.length();
+					quote_line.spans.push_back(span);
+				} break;
+				case MARKDOWN_BLOCK_PARAGRAPH:
+				default: {
+					MarkdownInlineSpanParseResult parsed = parse_inline_spans(render_block.text);
+					quote_line.text = parsed.output_text;
+					quote_line.spans = parsed.spans;
+				} break;
+				}
+
+				Rect2 content_rect = get_quote_content_rect(quote_line.depth);
+				if (render_block.type == MARKDOWN_BLOCK_THEMATIC_BREAK) {
+					const float separator_height = get_stylebox_margin_or(quote_line.stylebox, SIDE_TOP, 2.0f) + get_stylebox_margin_or(quote_line.stylebox, SIDE_BOTTOM, 1.0f);
+					quote_line.rect = Rect2(content_rect.position.x, quote_y, content_rect.size.x, std::max<float>(1.0f, separator_height));
+					quote_line.text_rect = quote_line.rect;
+					quote_line.text = String();
+					add_quote_line(quote_line, child_spacing_before, child_spacing_after);
+					return;
+				}
+
+				if (quote_line.text.is_empty()) {
+					return;
+				}
+
+				const float paragraph_width = std::max<float>(1.0f, content_rect.size.x - local_left_padding - local_right_padding);
 				quote_line.paragraph.instantiate();
-				quote_line.paragraph->set_width(line_width);
+				quote_line.paragraph->set_width(paragraph_width);
 				quote_line.paragraph->set_line_spacing(theme_cache.constant.line_separation);
-				add_spans_to_paragraph(quote_line.paragraph, paragraph_text, quote_line.spans, theme_cache, font, font_size, quote_line.image_map, line_width);
+				add_spans_to_paragraph(quote_line.paragraph, quote_line.text, quote_line.spans, theme_cache, quote_font, quote_font_size, quote_line.image_map, paragraph_width);
 
 				const Vector2 paragraph_size = quote_line.paragraph->get_size();
 				const Vector2 inline_code_padding = get_inline_code_vertical_padding(quote_line.spans, theme_cache);
-				quote_line.text_rect = Rect2(line_left, quote_y + inline_code_padding.x, line_width, paragraph_size.y);
+				local_top_padding += inline_code_padding.x;
+				local_bottom_padding += inline_code_padding.y;
+				quote_line.text_rect = Rect2(content_rect.position.x + local_left_padding, quote_y + local_top_padding, paragraph_width, paragraph_size.y);
+				quote_line.rect = Rect2(content_rect.position.x, quote_y, content_rect.size.x, paragraph_size.y + local_top_padding + local_bottom_padding);
 
-				if (line_index > 0) {
-					plain_text += "\n";
-				}
-				quote_line.global_start = plain_text.length();
-				plain_text += quote_line.text;
-				quote_line.global_end = plain_text.length();
-				item.quote_lines.push_back(quote_line);
+				if (render_block.type == MARKDOWN_BLOCK_UNORDERED_LIST || render_block.type == MARKDOWN_BLOCK_ORDERED_LIST || render_block.type == MARKDOWN_BLOCK_TASK_LIST) {
+					float list_line_y = quote_line.text_rect.position.y;
+					for (int32_t marker_index = 0; marker_index < render_block.items.size(); marker_index++) {
+						String marker_text;
+						if (render_block.type == MARKDOWN_BLOCK_ORDERED_LIST) {
+							marker_text = String::num_int64(marker_index + 1) + ".";
+						}
+						else if (render_block.type == MARKDOWN_BLOCK_TASK_LIST) {
+							marker_text = " ";
+						}
+						else {
+							marker_text = String::chr(0x2022);
+						}
 
-				item.blockquote_depth = std::max<int32_t>(item.blockquote_depth, depth);
-				quote_y += paragraph_size.y + inline_code_padding.x + inline_code_padding.y + quote_line_gap;
-				if (next_depth < depth) {
-					quote_y += nested_bottom * static_cast<float>(depth - next_depth);
+						float marker_size_x = 0.0f;
+						if (render_block.type == MARKDOWN_BLOCK_TASK_LIST) {
+							marker_size_x = static_cast<float>(theme_cache.font_size.list_marker);
+						}
+						else if (theme_cache.font.list_marker.is_valid()) {
+							const Vector2 marker_size = theme_cache.font.list_marker->get_string_size(marker_text, HORIZONTAL_ALIGNMENT_RIGHT, static_cast<int32_t>(quote_line.text_rect.position.x - theme_cache.constant.list_marker_gap), theme_cache.font_size.list_marker);
+							marker_size_x = marker_size.x;
+						}
+
+						MarkdownListMarker marker;
+						marker.text = marker_text;
+						marker.position = Vector2(std::max<float>(0.0f, quote_line.text_rect.position.x - static_cast<float>(theme_cache.constant.list_marker_gap) - marker_size_x), list_line_y + quote_line.paragraph->get_line_ascent(0));
+						marker.font = theme_cache.font.list_marker;
+						marker.font_size = theme_cache.font_size.list_marker;
+						marker.color = theme_cache.color.list_marker;
+						if (render_block.type == MARKDOWN_BLOCK_TASK_LIST && marker_index < static_cast<int32_t>(render_block.task_checked.size())) {
+							marker.task_checked = render_block.task_checked[marker_index];
+							marker.icon = marker.task_checked ? theme_cache.icon.task_checked : theme_cache.icon.task_unchecked;
+						}
+						quote_line.list_markers.push_back(marker);
+						list_line_y += quote_line.paragraph->get_line_size(0).y + theme_cache.constant.line_separation;
+					}
 				}
+
+				add_quote_line(quote_line, child_spacing_before, child_spacing_after);
+				if (!render_block.anchor.is_empty()) {
+					anchor_offsets[render_block.anchor] = quote_line.rect.position.y;
+				}
+			};
+
+			if (!block.children.empty()) {
+				for (const MarkdownBlock& child : block.children) {
+					append_quote_block(child, 1);
+				}
+			}
+			else {
+				MarkdownBlock fallback_child;
+				fallback_child.type = MARKDOWN_BLOCK_PARAGRAPH;
+				fallback_child.text = block.text;
+				append_quote_block(fallback_child, 1);
 			}
 
 			if (!item.quote_lines.empty()) {
-				quote_y -= quote_line_gap;
+				const int32_t last_depth = std::max<int32_t>(1, item.quote_lines.back().depth);
+				if (last_depth > 1) {
+					quote_y += nested_bottom * static_cast<float>(last_depth - 1);
+				}
+				quote_y -= static_cast<float>(last_quote_spacing_after);
 			}
 			item.global_end = plain_text.length();
 			item.paragraph_global_end = item.global_end;
@@ -1412,11 +1610,11 @@ void MarkdownLabelCanvas::_notification(int p_what) {
 					const bool line_in_run = line_index < static_cast<int32_t>(item.quote_lines.size()) && item.quote_lines[line_index].depth >= depth;
 					if (line_in_run && run_start < 0) {
 						run_start = line_index;
-						run_top = item.quote_lines[line_index].text_rect.position.y - nested_top;
-						run_bottom = item.quote_lines[line_index].text_rect.get_end().y + nested_bottom;
+						run_top = item.quote_lines[line_index].rect.position.y - nested_top;
+						run_bottom = item.quote_lines[line_index].rect.get_end().y + nested_bottom;
 					}
 					else if (line_in_run) {
-						run_bottom = item.quote_lines[line_index].text_rect.get_end().y + nested_bottom;
+						run_bottom = item.quote_lines[line_index].rect.get_end().y + nested_bottom;
 					}
 					else if (run_start >= 0) {
 						const float nested_rect_left = item.rect.position.x + panel_left + static_cast<float>(depth - 2) * quote_indent;
@@ -1429,12 +1627,25 @@ void MarkdownLabelCanvas::_notification(int p_what) {
 			}
 
 			for (const MarkdownBlockquoteLine& line : item.quote_lines) {
+				if (line.stylebox.is_valid()) {
+					draw_stylebox_or_rect(line.stylebox, line.rect, Color());
+				}
+				for (const MarkdownListMarker& marker : line.list_markers) {
+					if (marker.icon.is_valid()) {
+						const float icon_size = static_cast<float>(marker.font_size);
+						const float icon_y = marker.position.y - icon_size * 0.85f;
+						marker.icon->draw_rect(get_canvas_item(), Rect2(marker.position.x, icon_y, icon_size, icon_size), false);
+					}
+					if (marker.font.is_valid()) {
+						marker.font->draw_string(get_canvas_item(), marker.position, marker.text, HORIZONTAL_ALIGNMENT_LEFT, -1, marker.font_size, marker.color);
+					}
+				}
 				draw_span_decorations(line.paragraph, line.text_rect, line.spans, line.global_start, true, false);
 				if (search_match_start >= 0 && search_match_start < line.global_end && search_match_end > line.global_start) {
 					draw_range_background_for_paragraph(line.paragraph, line.text_rect, line.global_start, line.global_end, search_match_start, search_match_end, theme_cache.stylebox.search_result);
 				}
 				draw_selection_for_paragraph(line.paragraph, line.text_rect, line.global_start, line.global_end);
-				draw_paragraph_text(line.paragraph, line.text_rect, line.spans, line.global_start, item.text_color);
+				draw_paragraph_text(line.paragraph, line.text_rect, line.spans, line.global_start, line.text_color);
 				draw_paragraph_images(line.paragraph, line.text_rect, line.image_map);
 				draw_span_decorations(line.paragraph, line.text_rect, line.spans, line.global_start, false, true);
 			}
@@ -1507,7 +1718,10 @@ int64_t MarkdownLabelCanvas::hit_test_document(const Vector2& p_position) const 
 			}
 			if (item.type == MARKDOWN_BLOCK_BLOCKQUOTE) {
 				for (const MarkdownBlockquoteLine& line : item.quote_lines) {
-					if (p_position.y <= line.text_rect.get_end().y) {
+					if (p_position.y <= line.rect.get_end().y) {
+						if (line.paragraph.is_null()) {
+							return p_position.x < line.rect.get_center().x ? line.global_start : line.global_end;
+						}
 						const Vector2 local_position = p_position - line.text_rect.position;
 						const int32_t local_character = std::min<int32_t>(std::max<int32_t>(line.paragraph->hit_test(local_position), 0), static_cast<int32_t>(line.global_end - line.global_start));
 						return line.global_start + local_character;
@@ -1630,8 +1844,7 @@ String MarkdownLabelCanvas::image_tooltip_at_position(const Vector2& p_position)
 				for (const MarkdownInlineSpan& span : item.spans) {
 					if (!span.image_uri.is_empty() && local_ch >= span.start && local_ch <= span.end) {
 						if (!span.image_title.is_empty()) return span.image_title;
-						if (!span.link_uri.is_empty()) return span.link_uri;
-						return span.image_uri;
+						return String();
 					}
 				}
 			}

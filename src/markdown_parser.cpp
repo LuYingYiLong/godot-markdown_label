@@ -180,12 +180,9 @@ namespace {
 			return false;
 		}
 
-		int32_t pos = 0;
-		while (pos < trimmed_left.length() && trimmed_left[pos] == '>') {
+		int32_t pos = 1;
+		if (pos < trimmed_left.length() && (trimmed_left[pos] == ' ' || trimmed_left[pos] == '\t')) {
 			pos++;
-			if (pos < trimmed_left.length() && (trimmed_left[pos] == ' ' || trimmed_left[pos] == '\t')) {
-				pos++;
-			}
 		}
 
 		r_content = trimmed_left.substr(pos);
@@ -407,6 +404,9 @@ uint64_t compute_block_hash(const MarkdownBlock& p_block) {
 	for (int32_t i = 0; i < static_cast<int32_t>(p_block.item_levels.size()); i++) {
 		to_hash += "|l" + String::num_int64(p_block.item_levels[i]);
 	}
+	for (const MarkdownBlock& child : p_block.children) {
+		to_hash += "|c" + String::num_uint64(compute_block_hash(child));
+	}
 
 	return to_hash.hash();
 }
@@ -507,6 +507,16 @@ MarkdownInlineSpanParseResult parse_inline_spans(const String& p_text) {
 			emit_plain(pos, end);
 			pos = end;
 			continue;
+		}
+
+		if (raw[pos] == '\\' && pos + 1 < len) {
+			const char32_t next = raw[pos + 1];
+			const String escapable = "\\`*_{}[]()#+-.!|";
+			if (next == '\\' || next == '`' || next == '*' || next == '_' || next == '{' || next == '}' || next == '[' || next == ']' || next == '(' || next == ')' || next == '#' || next == '+' || next == '-' || next == '.' || next == '!' || next == '|') {
+				emit_plain(pos + 1, pos + 2);
+				pos += 2;
+				continue;
+			}
 		}
 
 		if (pos + 1 < len && raw[pos] == '!' && raw[pos + 1] == '[') {
@@ -731,7 +741,7 @@ MarkdownInlineSpanParseResult parse_inline_spans(const String& p_text) {
 			if (b >= 0x80) {
 				continue;
 			}
-			if (raw[i] == '*' || raw[i] == '[' || raw[i] == '!' || raw[i] == '`') {
+			if (raw[i] == '\\' || raw[i] == '*' || raw[i] == '[' || raw[i] == '!' || raw[i] == '`' || raw[i] == '~' || raw[i] == '=' || raw[i] == '<') {
 				next_special = i;
 				break;
 			}
@@ -799,6 +809,7 @@ std::vector<MarkdownBlock> parse_markdown_blocks(const String& p_text, const Mar
 			for (int32_t di = 0; di < static_cast<int32_t>(blockquote_depths.size()); di++) {
 				block.item_levels.push_back(blockquote_depths[di]);
 			}
+			block.children = parse_markdown_blocks(text);
 			blocks.push_back(block);
 			blockquote_lines.clear();
 			blockquote_depths.clear();

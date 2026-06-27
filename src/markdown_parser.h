@@ -75,15 +75,30 @@ struct MarkdownTableCell {
 	bool header = false;
 };
 
+struct MarkdownListMarker {
+	String text;
+	Vector2 position;
+	Ref<Font> font;
+	int32_t font_size = 16;
+	Color color;
+	bool task_checked = false;
+	Ref<Texture2D> icon;
+};
+
 struct MarkdownBlockquoteLine {
+	MarkdownBlockType type = MARKDOWN_BLOCK_PARAGRAPH;
 	Ref<TextParagraph> paragraph;
+	Ref<StyleBox> stylebox;
+	Rect2 rect;
 	Rect2 text_rect;
 	String text;
 	std::vector<MarkdownInlineSpan> spans;
 	HashMap<String, Ref<Texture2D>> image_map;
+	std::vector<MarkdownListMarker> list_markers;
 	int64_t global_start = 0;
 	int64_t global_end = 0;
 	int32_t depth = 1;
+	Color text_color;
 };
 
 struct MarkdownCanvasLine {
@@ -93,16 +108,6 @@ struct MarkdownCanvasLine {
 	int64_t global_end = 0;
 	Vector2 position;
 	Vector2 size;
-};
-
-struct MarkdownListMarker {
-	String text;
-	Vector2 position;
-	Ref<Font> font;
-	int32_t font_size = 16;
-	Color color;
-	bool task_checked = false;
-	Ref<Texture2D> icon;
 };
 
 struct MarkdownCanvasItem {

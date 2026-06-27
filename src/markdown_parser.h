@@ -48,6 +48,7 @@ struct MarkdownBlock {
 	int32_t line = 0;
 	String anchor;
 	int32_t indent = 0;
+	int32_t list_start = 1;
 	std::vector<int32_t> item_levels;
 	std::vector<bool> task_checked;
 	std::vector<MarkdownBlock> children;

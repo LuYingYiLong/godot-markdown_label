@@ -272,14 +272,16 @@ namespace {
 		return true;
 	}
 
-	static bool is_ordered_list_item(const String& p_line, String& r_item) {
+	static bool is_ordered_list_item(const String& p_line, String& r_item, int32_t& r_number) {
 		const String trimmed_left = trim_left_indent(p_line);
 		if (trimmed_left.length() < 3) {
 			return false;
 		}
 
 		int32_t i = 0;
+		int32_t number = 0;
 		while (i < trimmed_left.length() && trimmed_left[i] >= '0' && trimmed_left[i] <= '9') {
+			number = number * 10 + static_cast<int32_t>(trimmed_left[i] - '0');
 			i++;
 		}
 
@@ -291,6 +293,7 @@ namespace {
 			return false;
 		}
 
+		r_number = std::max<int32_t>(1, number);
 		r_item = trimmed_left.substr(i + 2).strip_edges();
 		return true;
 	}
@@ -356,7 +359,8 @@ namespace {
 		}
 
 		String dummy_item;
-		if (is_unordered_list_item(line, dummy_item) || is_ordered_list_item(line, dummy_item)) {
+		int32_t dummy_number = 1;
+		if (is_unordered_list_item(line, dummy_item) || is_ordered_list_item(line, dummy_item, dummy_number)) {
 			return false;
 		}
 		if (is_blockquote_line(line, dummy_item)) {
@@ -450,6 +454,8 @@ uint64_t compute_block_hash(const MarkdownBlock& p_block) {
 	to_hash += String::num_int64(p_block.level);
 	to_hash += "|";
 	to_hash += String::num_int64(p_block.indent);
+	to_hash += "|";
+	to_hash += String::num_int64(p_block.list_start);
 	for (int32_t i = 0; i < p_block.items.size(); i++) {
 		to_hash += "|i" + p_block.items[i];
 	}
@@ -663,13 +669,28 @@ MarkdownInlineSpanParseResult parse_inline_spans(const String& p_text) {
 			if (bracket_end != std::string::npos && bracket_end > pos + 1 && bracket_end + 1 < len && raw[bracket_end + 1] == '(') {
 				size_t url_end = find_url_close(bracket_end + 2);
 				if (url_end != std::string::npos && url_end > bracket_end + 2) {
-					MarkdownInlineSpan span;
-					span.text = String::utf8(raw.data() + pos + 1, static_cast<int64_t>(bracket_end - pos - 1));
-					span.link_uri = String::utf8(raw.data() + bracket_end + 2, static_cast<int64_t>(url_end - bracket_end - 2));
-					span.start = static_cast<int64_t>(output.length());
-					output += span.text;
-					span.end = static_cast<int64_t>(output.length());
-					append_span(span);
+					const String link_text = String::utf8(raw.data() + pos + 1, static_cast<int64_t>(bracket_end - pos - 1));
+					const String link_uri = String::utf8(raw.data() + bracket_end + 2, static_cast<int64_t>(url_end - bracket_end - 2)).strip_edges();
+					MarkdownInlineSpanParseResult inner_result = parse_inline_spans(link_text);
+					if (inner_result.spans.empty()) {
+						MarkdownInlineSpan span;
+						span.text = inner_result.output_text.is_empty() ? link_text : inner_result.output_text;
+						span.link_uri = link_uri;
+						span.start = static_cast<int64_t>(output.length());
+						output += span.text;
+						span.end = static_cast<int64_t>(output.length());
+						append_span(span);
+					}
+					else {
+						const int64_t output_start = static_cast<int64_t>(output.length());
+						output += inner_result.output_text;
+						for (MarkdownInlineSpan& span : inner_result.spans) {
+							span.link_uri = link_uri;
+							span.start += output_start;
+							span.end += output_start;
+							append_span(span);
+						}
+					}
 					pos = url_end + 1;
 					continue;
 				}
@@ -870,6 +891,7 @@ std::vector<MarkdownBlock> parse_markdown_blocks(const String& p_text, const Mar
 	int32_t list_base_indent = 0;
 	int32_t list_line = 0;
 	bool list_ordered = false;
+	int32_t list_start = 1;
 	std::vector<MarkdownFootnoteDefinition> footnote_definitions;
 
 	int32_t max_index = std::min<int32_t>(static_cast<int32_t>(lines.size()), p_max_lines);
@@ -934,6 +956,7 @@ std::vector<MarkdownBlock> parse_markdown_blocks(const String& p_text, const Mar
 			block.type = state.list_ordered ? MARKDOWN_BLOCK_ORDERED_LIST : MARKDOWN_BLOCK_UNORDERED_LIST;
 			block.line = list_line;
 			block.indent = std::max<int32_t>(0, list_base_indent / 2);
+			block.list_start = state.list_ordered ? list_start : 1;
 			for (const String& item : list_items) {
 				block.items.push_back(item);
 				block.item_levels.push_back(block.indent);
@@ -1239,12 +1262,14 @@ std::vector<MarkdownBlock> parse_markdown_blocks(const String& p_text, const Mar
 				state.list_ordered = false;
 				list_base_indent = item_indent;
 				list_line = index + 1;
+				list_start = 1;
 			}
 			else if (state.list_ordered || item_indent != list_base_indent) {
 				flush_list();
 				state.list_ordered = false;
 				list_base_indent = item_indent;
 				list_line = index + 1;
+				list_start = 1;
 			}
 			list_items.push_back(list_item_text);
 			index++;
@@ -1253,7 +1278,8 @@ std::vector<MarkdownBlock> parse_markdown_blocks(const String& p_text, const Mar
 
 		// Ordered list
 		String ordered_item_text;
-		if (is_ordered_list_item(line, ordered_item_text)) {
+		int32_t ordered_item_number = 1;
+		if (is_ordered_list_item(line, ordered_item_text, ordered_item_number)) {
 			flush_paragraph();
 			flush_blockquote();
 			int32_t item_indent = 0;
@@ -1263,12 +1289,14 @@ std::vector<MarkdownBlock> parse_markdown_blocks(const String& p_text, const Mar
 				state.list_ordered = true;
 				list_base_indent = item_indent;
 				list_line = index + 1;
+				list_start = ordered_item_number;
 			}
 			else if (!state.list_ordered || item_indent != list_base_indent) {
 				flush_list();
 				state.list_ordered = true;
 				list_base_indent = item_indent;
 				list_line = index + 1;
+				list_start = ordered_item_number;
 			}
 			list_items.push_back(ordered_item_text);
 			index++;

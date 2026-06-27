@@ -29,6 +29,8 @@ label.theme_type_variation = &"MarkdownLabel"
 | `table_header_font` | Font | 表格表头字体 | `text_font` |
 | `table_cell_font` | Font | 表格单元格字体 | `text_font` |
 | `h1_font` … `h6_font` | Font | 标题 1–6 级字体 | `text_font` |
+| `footnote_ref_font` | Font | 脚注引用标记字体（`[^id]`） | `text_font` |
+| `footnote_text_font` | Font | 脚注定义区域正文字体 | `text_font` |
 
 ### 字体大小 Font Sizes
 
@@ -41,6 +43,8 @@ label.theme_type_variation = &"MarkdownLabel"
 | `table_header_font_size` | int | 16 |
 | `table_cell_font_size` | int | 16 |
 | `h1_font_size` … `h6_font_size` | int | 28, 24, 21, 19, 17, 15 |
+| `footnote_ref_font_size` | int | `text_font_size` − 4（约 12） |
+| `footnote_text_font_size` | int | `text_font_size`（16） |
 
 所有字号会额外加上 `MarkdownLabel.extra_font_size` 的值（默认为 0）。
 
@@ -60,6 +64,8 @@ label.theme_type_variation = &"MarkdownLabel"
 | `table_header_font_color` | Color | `text_font_color` |
 | `table_cell_font_color` | Color | `text_font_color` |
 | `h1_font_color` … `h6_font_color` | Color | `text_font_color` |
+| `footnote_ref_font_color` | Color | `link_color` |
+| `footnote_text_font_color` | Color | `text_font_color` |
 
 ### 样式盒 StyleBoxes
 
@@ -77,6 +83,7 @@ label.theme_type_variation = &"MarkdownLabel"
 | `table_header_panel` | StyleBox | 表头单元格背景和边框 |
 | `table_cell_panel` | StyleBox | 普通单元格背景和边框 |
 | `table_striped_panel` | StyleBox | 条纹行单元格背景和边框 |
+| `footnote_ref` | StyleBox | 脚注引用标记的上标背景（未设置时不绘制背景） |
 
 以上 StyleBox 如果未设置主题值，会使用代码内置的默认样式，确保开箱即用。`table_panel` 例外 — 未设置时不绘制表格外边框。
 
@@ -129,6 +136,8 @@ label.theme_type_variation = &"MarkdownLabel"
 | `list_space_after` | int | `paragraph_separation` | 列表 |
 | `text_space_before` | int | 0 | 普通段落 |
 | `text_space_after` | int | `paragraph_separation` | 普通段落 |
+| `footnotes_space_before` | int | 0 | 脚注定义区域 |
+| `footnotes_space_after` | int | `paragraph_separation` | 脚注定义区域 |
 
 ### 图标 Icons
 
@@ -145,11 +154,14 @@ label.theme_type_variation = &"MarkdownLabel"
 
 对于解析后的行内 span，字体按以下优先级选择：
 
-1. 如果 span 是行内代码（`` `code` ``）→ 使用 `code_text_font`
-2. 如果 span 同时是粗体和斜体（`***text***`）→ 使用 `bold_italic_font`
-3. 如果 span 是粗体（`**text**`）→ 使用 `bold_font`
-4. 如果 span 是斜体（`*text*`）→ 使用 `italic_font`
-5. 否则 → 使用当前块类型的默认字体（如正文用 `text_font`，标题用 `h1_font` 等）
+1. 如果 span 是脚注引用（`[^id]`）→ 使用 `footnote_ref_font`，且字号使用 `footnote_ref_font_size`，并以上标偏移绘制
+2. 如果 span 是行内代码（`` `code` ``）→ 使用 `code_text_font`
+3. 如果 span 同时是粗体和斜体（`***text***`）→ 使用 `bold_italic_font`
+4. 如果 span 是粗体（`**text**`）→ 使用 `bold_font`
+5. 如果 span 是斜体（`*text*`）→ 使用 `italic_font`
+6. 否则 → 使用当前块类型的默认字体（如正文用 `text_font`，标题用 `h1_font` 等）
+
+> 脚注引用标记会以上标形式渲染（垂直偏移 = `footnote_ref_font_size × 0.35`），颜色使用 `footnote_ref_font_color`，并可选择通过 `footnote_ref` StyleBox 添加背景。脚注定义区域（文档末尾的 `[^id]: text` 列表）使用 `footnote_text_font`、`footnote_text_font_size` 和 `footnote_text_font_color`。
 
 ---
 
@@ -180,12 +192,16 @@ func _ready() -> void:
     label.add_theme_font_size_override("text_font_size", 15)
     label.add_theme_font_size_override("code_text_font_size", 14)
     label.add_theme_font_size_override("code_block_font_size", 14)
+    label.add_theme_font_size_override("footnote_ref_font_size", 11)
+    label.add_theme_font_size_override("footnote_text_font_size", 13)
 
     # 颜色
     label.add_theme_color_override("text_font_color", Color(0.9, 0.9, 0.9))
     label.add_theme_color_override("link_color", Color(0.3, 0.6, 1.0))
     label.add_theme_color_override("code_text_font_color", Color(0.9, 0.88, 0.5))
     label.add_theme_color_override("code_block_font_color", Color(0.85, 0.86, 0.9))
+    label.add_theme_color_override("footnote_ref_font_color", Color(0.4, 0.65, 1.0))
+    label.add_theme_color_override("footnote_text_font_color", Color(0.75, 0.75, 0.75))
 
     # 间距
     label.add_theme_constant_override("line_separation", 2)

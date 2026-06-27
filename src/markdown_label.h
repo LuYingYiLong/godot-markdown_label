@@ -30,6 +30,8 @@ struct MarkdownThemeCache {
 		int32_t list_indent = 26;
 		int32_t list_marker_gap = 6;
 		int32_t table_striped = 0;
+		int32_t footnote_space_before = 16;
+		int32_t footnote_line_separation = 2;
 	} constant;
 
 	struct FontSizes {

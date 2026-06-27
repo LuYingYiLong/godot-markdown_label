@@ -312,6 +312,8 @@ void MarkdownThemeCache::build(Control* p_owner, int32_t p_extra_font_size) {
 	constant.list_indent = std::max<int32_t>(0, get_theme_constant_or(p_owner, "MarkdownLabel", "list_indent", 26));
 	constant.list_marker_gap = std::max<int32_t>(0, get_theme_constant_or(p_owner, "MarkdownLabel", "list_marker_gap", 6));
 	constant.table_striped = std::max<int32_t>(0, get_theme_constant_or(p_owner, "MarkdownLabel", "table_striped", 0));
+	constant.footnote_space_before = std::max<int32_t>(0, get_theme_constant_or(p_owner, "MarkdownLabel", "footnote_space_before", 16));
+	constant.footnote_line_separation = std::max<int32_t>(0, get_theme_constant_or(p_owner, "MarkdownLabel", "footnote_line_separation", constant.line_separation));
 	// Fonts
 	font.text = get_theme_font_or(p_owner, "MarkdownLabel", "text_font");
 	font.bold = get_theme_font_or(p_owner, "MarkdownLabel", "bold_font");
@@ -1092,7 +1094,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 					for (int32_t marker_index = 0; marker_index < render_block.items.size(); marker_index++) {
 						String marker_text;
 						if (render_block.type == MARKDOWN_BLOCK_ORDERED_LIST) {
-							marker_text = String::num_int64(marker_index + 1) + ".";
+							marker_text = String::num_int64(std::max<int32_t>(1, render_block.list_start) + marker_index) + ".";
 						}
 						else if (render_block.type == MARKDOWN_BLOCK_TASK_LIST) {
 							marker_text = " ";
@@ -1171,7 +1173,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 			font = theme_cache.font.footnote_text;
 			font_size = theme_cache.font_size.footnote_text;
 			item.text_color = theme_cache.color.footnote_text;
-			top_padding = 16.0f;
+			top_padding = static_cast<float>(theme_cache.constant.footnote_space_before);
 
 			for (int32_t current_number = 1; current_number <= static_cast<int32_t>(footnote_numbers.size()); current_number++) {
 				for (const MarkdownFootnoteDefinition& definition : block.footnotes) {
@@ -1180,11 +1182,17 @@ void MarkdownLabelCanvas::rebuild_layout() {
 					}
 
 					if (!item_text.is_empty()) {
-						item_text += "\n\n";
+						item_text += "\n";
 					}
 
 					const int64_t footnote_start = item_text.length();
-					item_text += String::num_int64(current_number) + ". ";
+					const String number_text = String::num_int64(current_number) + ". ";
+					item_text += number_text;
+					MarkdownInlineSpan number_span;
+					number_span.text = number_text;
+					number_span.start = footnote_start;
+					number_span.end = item_text.length();
+					item_spans.push_back(number_span);
 					MarkdownInlineSpanParseResult parsed = finalize_inline_result(parse_inline_spans(definition.text));
 					const int64_t content_start = item_text.length();
 					item_text += parsed.output_text;
@@ -1331,7 +1339,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 
 		item.paragraph.instantiate();
 		item.paragraph->set_width(std::max<float>(1.0f, width - left_padding - right_padding));
-		item.paragraph->set_line_spacing(theme_cache.constant.line_separation);
+		item.paragraph->set_line_spacing(item.type == MARKDOWN_BLOCK_FOOTNOTES ? theme_cache.constant.footnote_line_separation : theme_cache.constant.line_separation);
 		add_spans_to_paragraph(item.paragraph, item_text, item.spans, theme_cache, font, font_size, item.image_map, std::max<float>(1.0f, width - left_padding - right_padding));
 
 		const Vector2 paragraph_size = item.paragraph->get_size();
@@ -1375,7 +1383,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 			for (int32_t marker_index = 0; marker_index < block.items.size(); marker_index++) {
 				String marker_text;
 				if (block.type == MARKDOWN_BLOCK_ORDERED_LIST) {
-					marker_text = String::num_int64(marker_index + 1) + ".";
+					marker_text = String::num_int64(std::max<int32_t>(1, block.list_start) + marker_index) + ".";
 				}
 				else if (block.type == MARKDOWN_BLOCK_TASK_LIST) {
 					marker_text = " ";

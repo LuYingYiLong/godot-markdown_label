@@ -29,6 +29,58 @@ namespace {
 		return p_line.substr(get_indent(p_line));
 	}
 
+	static bool is_footnote_id_valid(const String& p_id) {
+		if (p_id.is_empty()) {
+			return false;
+		}
+		for (int32_t i = 0; i < p_id.length(); i++) {
+			if (p_id[i] == ' ' || p_id[i] == '\t' || p_id[i] == '\n') {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	static bool is_footnote_definition_start(const String& p_line, String& r_id, String& r_text) {
+		if (get_indent(p_line) > 3) {
+			return false;
+		}
+
+		const String trimmed_left = trim_left_indent(p_line);
+		if (!trimmed_left.begins_with("[^")) {
+			return false;
+		}
+
+		const int32_t close_pos = trimmed_left.find("]");
+		if (close_pos <= 2 || close_pos + 1 >= trimmed_left.length() || trimmed_left[close_pos + 1] != ':') {
+			return false;
+		}
+
+		const String id = trimmed_left.substr(2, close_pos - 2);
+		if (!is_footnote_id_valid(id)) {
+			return false;
+		}
+
+		r_id = id;
+		r_text = trimmed_left.substr(close_pos + 2).strip_edges();
+		return true;
+	}
+
+	static bool is_footnote_continuation_line(const String& p_line, String& r_text) {
+		if (is_blank_line(p_line)) {
+			r_text = String();
+			return true;
+		}
+
+		const int32_t indent = get_indent(p_line);
+		if (indent < 4) {
+			return false;
+		}
+
+		r_text = p_line.substr(std::min<int32_t>(4, p_line.length())).rstrip(" \t");
+		return true;
+	}
+
 	static String join_wrapped_line(const String& p_current, const String& p_next) {
 		if (p_current.is_empty()) {
 			return p_next.strip_edges();
@@ -401,6 +453,9 @@ uint64_t compute_block_hash(const MarkdownBlock& p_block) {
 	for (int32_t i = 0; i < p_block.items.size(); i++) {
 		to_hash += "|i" + p_block.items[i];
 	}
+	for (const MarkdownFootnoteDefinition& footnote : p_block.footnotes) {
+		to_hash += "|f" + footnote.id + ":" + footnote.text;
+	}
 	for (int32_t i = 0; i < static_cast<int32_t>(p_block.item_levels.size()); i++) {
 		to_hash += "|l" + String::num_int64(p_block.item_levels[i]);
 	}
@@ -424,7 +479,7 @@ MarkdownInlineSpanParseResult parse_inline_spans(const String& p_text) {
 	auto append_span = [&result](const MarkdownInlineSpan& span) {
 		if (!result.spans.empty()) {
 			const MarkdownInlineSpan& last = result.spans.back();
-			if (last.link_uri == span.link_uri && last.image_uri == span.image_uri && last.image_title == span.image_title && last.bold == span.bold && last.italic == span.italic && last.code == span.code && last.strikethrough == span.strikethrough && last.highlight == span.highlight && last.custom_color == span.custom_color && (!last.custom_color || last.color == span.color) && last.end == span.start) {
+			if (last.link_uri == span.link_uri && last.image_uri == span.image_uri && last.image_title == span.image_title && last.footnote_id == span.footnote_id && last.footnote_number == span.footnote_number && last.footnote_ref == span.footnote_ref && last.bold == span.bold && last.italic == span.italic && last.code == span.code && last.strikethrough == span.strikethrough && last.highlight == span.highlight && last.custom_color == span.custom_color && (!last.custom_color || last.color == span.color) && last.end == span.start) {
 				result.spans.back().text += span.text;
 				result.spans.back().end = span.end;
 				return;
@@ -515,6 +570,25 @@ MarkdownInlineSpanParseResult parse_inline_spans(const String& p_text) {
 			if (next == '\\' || next == '`' || next == '*' || next == '_' || next == '{' || next == '}' || next == '[' || next == ']' || next == '(' || next == ')' || next == '#' || next == '+' || next == '-' || next == '.' || next == '!' || next == '|') {
 				emit_plain(pos + 1, pos + 2);
 				pos += 2;
+				continue;
+			}
+		}
+
+		if (pos + 3 < len && raw[pos] == '[' && raw[pos + 1] == '^') {
+			size_t close_pos = pos + 2;
+			while (close_pos < len && raw[close_pos] != ']' && raw[close_pos] != ' ' && raw[close_pos] != '\t' && raw[close_pos] != '\n') {
+				close_pos++;
+			}
+			if (close_pos < len && raw[close_pos] == ']' && close_pos > pos + 2) {
+				MarkdownInlineSpan span;
+				span.footnote_ref = true;
+				span.footnote_id = String::utf8(raw.data() + pos + 2, static_cast<int64_t>(close_pos - pos - 2));
+				span.text = String::chr(0xfffc);
+				span.start = static_cast<int64_t>(output.length());
+				output += span.text;
+				span.end = static_cast<int64_t>(output.length());
+				append_span(span);
+				pos = close_pos + 1;
 				continue;
 			}
 		}
@@ -796,6 +870,7 @@ std::vector<MarkdownBlock> parse_markdown_blocks(const String& p_text, const Mar
 	int32_t list_base_indent = 0;
 	int32_t list_line = 0;
 	bool list_ordered = false;
+	std::vector<MarkdownFootnoteDefinition> footnote_definitions;
 
 	int32_t max_index = std::min<int32_t>(static_cast<int32_t>(lines.size()), p_max_lines);
 	int32_t index = 0;
@@ -959,6 +1034,41 @@ std::vector<MarkdownBlock> parse_markdown_blocks(const String& p_text, const Mar
 			code_accumulator = String();
 			code_line = index + 1;
 			index++;
+			continue;
+		}
+
+		// Footnote definition
+		String footnote_id;
+		String footnote_text;
+		if (is_footnote_definition_start(line, footnote_id, footnote_text)) {
+			flush_all();
+			MarkdownFootnoteDefinition definition;
+			definition.id = footnote_id;
+			definition.text = footnote_text;
+			index++;
+
+			while (index < max_index) {
+				String continuation_text;
+				if (!is_footnote_continuation_line(lines[index], continuation_text)) {
+					break;
+				}
+
+				if (continuation_text.is_empty()) {
+					if (!definition.text.is_empty() && !definition.text.ends_with("\n\n")) {
+						definition.text += "\n\n";
+					}
+				}
+				else {
+					if (!definition.text.is_empty() && !definition.text.ends_with("\n\n")) {
+						definition.text += "\n";
+					}
+					definition.text += continuation_text.strip_edges();
+				}
+				index++;
+			}
+
+			definition.text = definition.text.rstrip("\n \t");
+			footnote_definitions.push_back(definition);
 			continue;
 		}
 
@@ -1182,6 +1292,13 @@ std::vector<MarkdownBlock> parse_markdown_blocks(const String& p_text, const Mar
 	}
 
 	flush_all();
+	if (!footnote_definitions.empty()) {
+		MarkdownBlock footnote_block;
+		footnote_block.type = MARKDOWN_BLOCK_FOOTNOTES;
+		footnote_block.line = max_index;
+		footnote_block.footnotes = footnote_definitions;
+		blocks.push_back(footnote_block);
+	}
 
 	return blocks;
 }

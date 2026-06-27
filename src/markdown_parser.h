@@ -26,6 +26,12 @@ enum MarkdownBlockType {
 	MARKDOWN_BLOCK_IMAGE,
 	MARKDOWN_BLOCK_TABLE,
 	MARKDOWN_BLOCK_TASK_LIST,
+	MARKDOWN_BLOCK_FOOTNOTES,
+};
+
+struct MarkdownFootnoteDefinition {
+	String id;
+	String text;
 };
 
 struct MarkdownBlock {
@@ -33,6 +39,7 @@ struct MarkdownBlock {
 	String text;
 	String argument;
 	PackedStringArray items;
+	std::vector<MarkdownFootnoteDefinition> footnotes;
 	std::vector<PackedStringArray> rows;
 	std::vector<int32_t> column_alignments;
 	int32_t level = 0;
@@ -51,6 +58,8 @@ struct MarkdownInlineSpan {
 	String link_uri;
 	String image_uri;
 	String image_title;
+	String footnote_id;
+	int32_t footnote_number = 0;
 	int64_t start = 0;
 	int64_t end = 0;
 	Color color;
@@ -60,6 +69,7 @@ struct MarkdownInlineSpan {
 	bool strikethrough = false;
 	bool highlight = false;
 	bool custom_color = false;
+	bool footnote_ref = false;
 };
 
 struct MarkdownTableCell {
@@ -149,6 +159,10 @@ struct MarkdownCanvasItem {
 	std::vector<MarkdownTableCell> cells;
 	HashMap<String, Ref<Texture2D>> image_map;
 	std::vector<MarkdownBlockquoteLine> quote_lines;
+	std::vector<String> footnote_ids;
+	std::vector<int32_t> footnote_numbers;
+	std::vector<int64_t> footnote_starts;
+	std::vector<int64_t> footnote_ends;
 };
 
 struct MarkdownParserState {

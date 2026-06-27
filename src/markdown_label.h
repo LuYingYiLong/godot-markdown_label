@@ -40,6 +40,8 @@ struct MarkdownThemeCache {
 		int32_t heading[6] = { 28, 24, 21, 19, 17, 15 };
 		int32_t table_header = 16;
 		int32_t table_cell = 16;
+		int32_t footnote_ref = 12;
+		int32_t footnote_text = 16;
 	} font_size;
 
 	struct Colors {
@@ -55,6 +57,8 @@ struct MarkdownThemeCache {
 		Color list_marker = Color(1.0f, 1.0f, 1.0f, 1.0f);
 		Color table_header_font = Color(1.0f, 1.0f, 1.0f, 1.0f);
 		Color table_cell_font = Color(1.0f, 1.0f, 1.0f, 1.0f);
+		Color footnote_ref = Color(0.36f, 0.62f, 1.0f, 1.0f);
+		Color footnote_text = Color(0.86f, 0.88f, 0.91f, 1.0f);
 	} color;
 
 	struct Fonts {
@@ -68,6 +72,8 @@ struct MarkdownThemeCache {
 		Ref<Font> list_marker;
 		Ref<Font> table_header;
 		Ref<Font> table_cell;
+		Ref<Font> footnote_ref;
+		Ref<Font> footnote_text;
 	} font;
 
 	struct StyleBoxes {
@@ -83,6 +89,7 @@ struct MarkdownThemeCache {
 		Ref<StyleBox> table_header_panel;
 		Ref<StyleBox> table_cell_panel;
 		Ref<StyleBox> table_striped_panel;
+		Ref<StyleBox> footnote_ref;
 	} stylebox;
 
 	struct Icons {
@@ -117,6 +124,8 @@ private:
 	float content_height = 1.0f;
 	float layout_width = 0.0f;
 	Dictionary anchor_offsets;
+	HashMap<String, float> footnote_reference_offsets;
+	HashMap<String, float> footnote_definition_offsets;
 
 	MarkdownThemeCache theme_cache;
 
@@ -140,6 +149,8 @@ private:
 	String link_uri_at_position(const Vector2& p_position) const;
 	String link_uri_at_character(int64_t p_character) const;
 	String image_tooltip_at_position(const Vector2& p_position) const;
+	float footnote_target_at_position(const Vector2& p_position) const;
+	String footnote_id_at_character(int64_t p_character, bool p_reference) const;
 	int64_t line_column_to_offset(int32_t p_line, int32_t p_column) const;
 	Vector2i offset_to_line_column(int64_t p_offset) const;
 	bool has_selection() const;

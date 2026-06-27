@@ -222,8 +222,9 @@ namespace {
 			}
 			else {
 				const Ref<Font> font = get_span_font(span, p_cache, p_normal_font);
-				const int32_t font_size = span.code ? p_cache.font_size.code : p_font_size;
-				p_paragraph->add_string(span.text, font, std::max<int32_t>(1, font_size));
+				const int32_t font_size = span.footnote_ref ? p_cache.font_size.footnote_ref : (span.code ? p_cache.font_size.code : p_font_size);
+				const Ref<Font> actual_font = span.footnote_ref && p_cache.font.footnote_ref.is_valid() ? p_cache.font.footnote_ref : font;
+				p_paragraph->add_string(span.text, actual_font, std::max<int32_t>(1, font_size));
 			}
 			pos = span.end;
 		}
@@ -273,6 +274,8 @@ namespace {
 			return "code_block";
 		case MARKDOWN_BLOCK_TABLE:
 			return "table";
+		case MARKDOWN_BLOCK_FOOTNOTES:
+			return "footnotes";
 		case MARKDOWN_BLOCK_BLOCKQUOTE:
 			return "blockquote";
 		case MARKDOWN_BLOCK_TASK_LIST:
@@ -294,6 +297,8 @@ void MarkdownThemeCache::build(Control* p_owner, int32_t p_extra_font_size) {
 	font_size.list_marker = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "list_marker_font_size", 16) + p_extra_font_size);
 	font_size.table_header = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "table_header_font_size", 16) + p_extra_font_size);
 	font_size.table_cell = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "table_cell_font_size", 16) + p_extra_font_size);
+	font_size.footnote_text = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "footnote_text_font_size", font_size.text) + p_extra_font_size);
+	font_size.footnote_ref = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "footnote_ref_font_size", std::max<int32_t>(1, font_size.text - 4)) + p_extra_font_size);
 
 	static const int32_t default_heading_sizes[] = { 28, 24, 21, 19, 17, 15 };
 	for (int32_t i = 0; i < 6; i++) {
@@ -338,6 +343,14 @@ void MarkdownThemeCache::build(Control* p_owner, int32_t p_extra_font_size) {
 	if (!font.table_cell.is_valid()) {
 		font.table_cell = font.text;
 	}
+	font.footnote_ref = get_theme_font_or(p_owner, "MarkdownLabel", "footnote_ref_font");
+	if (!font.footnote_ref.is_valid()) {
+		font.footnote_ref = font.text;
+	}
+	font.footnote_text = get_theme_font_or(p_owner, "MarkdownLabel", "footnote_text_font");
+	if (!font.footnote_text.is_valid()) {
+		font.footnote_text = font.text;
+	}
 
 	for (int32_t i = 0; i < 6; i++) {
 		const String name = String("h") + String::num_int64(i + 1) + "_font";
@@ -363,6 +376,8 @@ void MarkdownThemeCache::build(Control* p_owner, int32_t p_extra_font_size) {
 	color.list_marker = get_theme_color_or(p_owner, "MarkdownLabel", "list_marker_color", color.text);
 	color.table_header_font = get_theme_color_or(p_owner, "MarkdownLabel", "table_header_font_color", color.text);
 	color.table_cell_font = get_theme_color_or(p_owner, "MarkdownLabel", "table_cell_font_color", color.text);
+	color.footnote_ref = get_theme_color_or(p_owner, "MarkdownLabel", "footnote_ref_font_color", color.link);
+	color.footnote_text = get_theme_color_or(p_owner, "MarkdownLabel", "footnote_text_font_color", color.text);
 
 	for (int32_t i = 0; i < 6; i++) {
 		const String name = String("h") + String::num_int64(i + 1) + "_font_color";
@@ -374,6 +389,8 @@ void MarkdownThemeCache::build(Control* p_owner, int32_t p_extra_font_size) {
 	if (!stylebox.inline_code.is_valid()) {
 		stylebox.inline_code = create_internal_stylebox(Color(0.16f, 0.18f, 0.20f, 1.0f), Color(0, 0, 0, 0), 0, 0, 0, 0, 2.0f, 1.0f, 2.0f, 1.0f);
 	}
+
+	stylebox.footnote_ref = get_theme_stylebox_or(p_owner, "MarkdownLabel", "footnote_ref");
 
 	stylebox.code_block_panel = get_theme_stylebox_or(p_owner, "MarkdownLabel", "code_block_panel");
 	if (!stylebox.code_block_panel.is_valid()) {
@@ -706,8 +723,69 @@ void MarkdownLabelCanvas::rebuild_layout() {
 	lines.clear();
 	plain_text = String();
 	rendered_block_count = 0;
+	footnote_reference_offsets.clear();
+	footnote_definition_offsets.clear();
 
 	build_theme_cache();
+	HashMap<String, int32_t> footnote_numbers;
+
+	auto finalize_inline_result = [&](MarkdownInlineSpanParseResult p_result) {
+		if (p_result.spans.empty()) {
+			return p_result;
+		}
+
+		MarkdownInlineSpanParseResult result;
+		int64_t old_position = 0;
+		for (MarkdownInlineSpan span : p_result.spans) {
+			const int64_t old_span_end = span.end;
+			if (span.start > old_position) {
+				result.output_text += p_result.output_text.substr(old_position, span.start - old_position);
+			}
+
+			if (span.footnote_ref) {
+				if (!footnote_numbers.has(span.footnote_id)) {
+					footnote_numbers[span.footnote_id] = static_cast<int32_t>(footnote_numbers.size()) + 1;
+				}
+				span.footnote_number = footnote_numbers[span.footnote_id];
+				span.text = String::num_int64(span.footnote_number);
+			}
+
+			span.start = result.output_text.length();
+			result.output_text += span.text;
+			span.end = result.output_text.length();
+			result.spans.push_back(span);
+			old_position = std::max<int64_t>(old_position, old_span_end);
+		}
+
+		if (old_position < p_result.output_text.length()) {
+			result.output_text += p_result.output_text.substr(old_position);
+		}
+		return result;
+	};
+
+	auto paragraph_y_for_local_character = [&](const Ref<TextParagraph>& p_paragraph, const Rect2& p_text_rect, int64_t p_local_character) {
+		if (p_paragraph.is_null()) {
+			return p_text_rect.position.y;
+		}
+
+		float paragraph_y = p_text_rect.position.y;
+		for (int32_t line_index = 0; line_index < p_paragraph->get_line_count(); line_index++) {
+			const Vector2i range = p_paragraph->get_line_range(line_index);
+			if (p_local_character >= range.x && p_local_character <= range.y) {
+				return paragraph_y;
+			}
+			paragraph_y += p_paragraph->get_line_size(line_index).y + p_paragraph->get_line_spacing();
+		}
+		return p_text_rect.position.y;
+	};
+
+	auto record_footnote_reference_offsets = [&](const Ref<TextParagraph>& p_paragraph, const Rect2& p_text_rect, const std::vector<MarkdownInlineSpan>& p_spans) {
+		for (const MarkdownInlineSpan& span : p_spans) {
+			if (span.footnote_ref && !span.footnote_id.is_empty() && !footnote_reference_offsets.has(span.footnote_id)) {
+				footnote_reference_offsets[span.footnote_id] = paragraph_y_for_local_character(p_paragraph, p_text_rect, span.start);
+			}
+		}
+	};
 
 	float y = 0.0f;
 
@@ -752,7 +830,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 			item.heading_level = block.level;
 			item.anchor = block.anchor;
 
-			MarkdownInlineSpanParseResult parsed = parse_inline_spans(block.text);
+			MarkdownInlineSpanParseResult parsed = finalize_inline_result(parse_inline_spans(block.text));
 			item_text = parsed.output_text;
 			item_spans = parsed.spans;
 		} break;
@@ -763,7 +841,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 				if (!item_text.is_empty()) {
 					item_text += "\n";
 				}
-				MarkdownInlineSpanParseResult parsed = parse_inline_spans(block.items[i]);
+				MarkdownInlineSpanParseResult parsed = finalize_inline_result(parse_inline_spans(block.items[i]));
 				const int64_t item_start = item_text.length();
 				item_text += parsed.output_text;
 				for (MarkdownInlineSpan& span : parsed.spans) {
@@ -865,6 +943,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 
 				append_quote_plain_text(r_line);
 				item.blockquote_depth = std::max<int32_t>(item.blockquote_depth, r_line.depth);
+				record_footnote_reference_offsets(r_line.paragraph, r_line.text_rect, r_line.spans);
 				item.quote_lines.push_back(r_line);
 				last_quote_spacing_after = p_block_spacing_after;
 				quote_y = item.quote_lines.back().rect.get_end().y + static_cast<float>(p_block_spacing_after);
@@ -928,7 +1007,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 					quote_font = theme_cache.font.heading[heading_index];
 					quote_font_size = theme_cache.font_size.heading[heading_index];
 					quote_line.text_color = theme_cache.color.heading[heading_index];
-					MarkdownInlineSpanParseResult parsed = parse_inline_spans(render_block.text);
+					MarkdownInlineSpanParseResult parsed = finalize_inline_result(parse_inline_spans(render_block.text));
 					quote_line.text = parsed.output_text;
 					quote_line.spans = parsed.spans;
 				} break;
@@ -939,7 +1018,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 						if (!quote_line.text.is_empty()) {
 							quote_line.text += "\n";
 						}
-						MarkdownInlineSpanParseResult parsed = parse_inline_spans(render_block.items[i]);
+						MarkdownInlineSpanParseResult parsed = finalize_inline_result(parse_inline_spans(render_block.items[i]));
 						const int64_t item_start = quote_line.text.length();
 						quote_line.text += parsed.output_text;
 						for (MarkdownInlineSpan& span : parsed.spans) {
@@ -975,7 +1054,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 				} break;
 				case MARKDOWN_BLOCK_PARAGRAPH:
 				default: {
-					MarkdownInlineSpanParseResult parsed = parse_inline_spans(render_block.text);
+					MarkdownInlineSpanParseResult parsed = finalize_inline_result(parse_inline_spans(render_block.text));
 					quote_line.text = parsed.output_text;
 					quote_line.spans = parsed.spans;
 				} break;
@@ -1085,6 +1164,43 @@ void MarkdownLabelCanvas::rebuild_layout() {
 			item.panel_stylebox = theme_cache.stylebox.separator;
 			item.framed = true;
 			break;
+		case MARKDOWN_BLOCK_FOOTNOTES: {
+			item.type = MARKDOWN_BLOCK_FOOTNOTES;
+			item.panel_stylebox = theme_cache.stylebox.separator;
+			item.framed = true;
+			font = theme_cache.font.footnote_text;
+			font_size = theme_cache.font_size.footnote_text;
+			item.text_color = theme_cache.color.footnote_text;
+			top_padding = 16.0f;
+
+			for (int32_t current_number = 1; current_number <= static_cast<int32_t>(footnote_numbers.size()); current_number++) {
+				for (const MarkdownFootnoteDefinition& definition : block.footnotes) {
+					if (!footnote_numbers.has(definition.id) || footnote_numbers[definition.id] != current_number) {
+						continue;
+					}
+
+					if (!item_text.is_empty()) {
+						item_text += "\n\n";
+					}
+
+					const int64_t footnote_start = item_text.length();
+					item_text += String::num_int64(current_number) + ". ";
+					MarkdownInlineSpanParseResult parsed = finalize_inline_result(parse_inline_spans(definition.text));
+					const int64_t content_start = item_text.length();
+					item_text += parsed.output_text;
+					for (MarkdownInlineSpan& span : parsed.spans) {
+						span.start += content_start;
+						span.end += content_start;
+						item_spans.push_back(span);
+					}
+
+					item.footnote_ids.push_back(definition.id);
+					item.footnote_numbers.push_back(current_number);
+					item.footnote_starts.push_back(footnote_start);
+					item.footnote_ends.push_back(item_text.length());
+				}
+			}
+		} break;
 		case MARKDOWN_BLOCK_IMAGE: {
 			item_text = String("[Image: ") + block.argument + "]";
 			MarkdownInlineSpan span;
@@ -1111,7 +1227,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 					MarkdownTableCell cell;
 					cell.header = (row_idx < block.header_rows);
 					cell.text = block.rows[row_idx][col_idx];
-					MarkdownInlineSpanParseResult parsed = parse_inline_spans(cell.text);
+					MarkdownInlineSpanParseResult parsed = finalize_inline_result(parse_inline_spans(cell.text));
 					cell.text = parsed.output_text;
 					cell.spans = parsed.spans;
 					const Ref<Font> cell_font = cell.header ? theme_cache.font.table_header : theme_cache.font.table_cell;
@@ -1157,6 +1273,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 					const float cell_top = get_stylebox_margin_or(cell.stylebox, SIDE_TOP, 4.0f);
 					cell.rect = Rect2(table_left + static_cast<float>(col_idx) * column_width, table_y, column_width, row_heights[row_idx]);
 					cell.text_rect = Rect2(cell.rect.position.x + cell_left, cell.rect.position.y + cell_top, column_width - cell_left - get_stylebox_margin_or(cell.stylebox, SIDE_RIGHT, 6.0f), cell.paragraph->get_size().y);
+					record_footnote_reference_offsets(cell.paragraph, cell.text_rect, cell.spans);
 
 					if (!plain_text.is_empty()) plain_text += " ";
 					cell.global_start = plain_text.length();
@@ -1175,7 +1292,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 		}
 		case MARKDOWN_BLOCK_PARAGRAPH:
 		default: {
-			MarkdownInlineSpanParseResult parsed = parse_inline_spans(block.text);
+			MarkdownInlineSpanParseResult parsed = finalize_inline_result(parse_inline_spans(block.text));
 			item_text = parsed.output_text;
 			item_spans = parsed.spans;
 		} break;
@@ -1241,6 +1358,16 @@ void MarkdownLabelCanvas::rebuild_layout() {
 			}
 			line.size = item.paragraph->get_line_size(line_index);
 			lines.push_back(line);
+		}
+		record_footnote_reference_offsets(item.paragraph, item.text_rect, item.spans);
+
+		if (item.type == MARKDOWN_BLOCK_FOOTNOTES) {
+			for (int32_t footnote_index = 0; footnote_index < static_cast<int32_t>(item.footnote_ids.size()); footnote_index++) {
+				const String footnote_id = item.footnote_ids[footnote_index];
+				if (footnote_index < static_cast<int32_t>(item.footnote_starts.size())) {
+					footnote_definition_offsets[footnote_id] = paragraph_y_for_local_character(item.paragraph, item.text_rect, item.footnote_starts[footnote_index]);
+				}
+			}
 		}
 
 		if ((block.type == MARKDOWN_BLOCK_UNORDERED_LIST || block.type == MARKDOWN_BLOCK_ORDERED_LIST || block.type == MARKDOWN_BLOCK_TASK_LIST)) {
@@ -1457,7 +1584,7 @@ void MarkdownLabelCanvas::draw_span_decorations(const Ref<TextParagraph>& p_para
 	const Color& link_color = theme_cache.color.link;
 
 	for (const MarkdownInlineSpan& span : p_spans) {
-		if (!(p_draw_code_backgrounds && (span.code || span.highlight)) && !(p_draw_link_underlines && (!span.link_uri.is_empty() || span.strikethrough))) {
+		if (!(p_draw_code_backgrounds && (span.code || span.highlight || (span.footnote_ref && theme_cache.stylebox.footnote_ref.is_valid()))) && !(p_draw_link_underlines && (!span.link_uri.is_empty() || span.strikethrough))) {
 			continue;
 		}
 
@@ -1481,13 +1608,22 @@ void MarkdownLabelCanvas::draw_span_decorations(const Ref<TextParagraph>& p_para
 							const Rect2 hl_rect = Rect2(x_base + selected_range.x - hl_left, y - hl_top, selected_range.y - selected_range.x + hl_left + hl_right, line_size.y + hl_top + hl_bottom);
 							draw_stylebox_or_rect(theme_cache.stylebox.highlight, hl_rect, theme_cache.color.highlight);
 						}
-						if (p_draw_code_backgrounds && span.code) {
+					if (p_draw_code_backgrounds && span.code) {
 						const float margin_left = get_stylebox_margin_or(theme_cache.stylebox.inline_code, SIDE_LEFT, 2.0f);
 						const float margin_top = get_stylebox_margin_or(theme_cache.stylebox.inline_code, SIDE_TOP, 1.0f);
 						const float margin_right = get_stylebox_margin_or(theme_cache.stylebox.inline_code, SIDE_RIGHT, 2.0f);
 						const float margin_bottom = get_stylebox_margin_or(theme_cache.stylebox.inline_code, SIDE_BOTTOM, 1.0f);
 						const Rect2 code_rect = Rect2(x_base + selected_range.x - margin_left, y - margin_top, selected_range.y - selected_range.x + margin_left + margin_right, line_size.y + margin_top + margin_bottom);
 						draw_stylebox_or_rect(theme_cache.stylebox.inline_code, code_rect, Color());
+					}
+					if (p_draw_code_backgrounds && span.footnote_ref && theme_cache.stylebox.footnote_ref.is_valid()) {
+						const float margin_left = get_stylebox_margin_or(theme_cache.stylebox.footnote_ref, SIDE_LEFT, 1.0f);
+						const float margin_top = get_stylebox_margin_or(theme_cache.stylebox.footnote_ref, SIDE_TOP, 0.0f);
+						const float margin_right = get_stylebox_margin_or(theme_cache.stylebox.footnote_ref, SIDE_RIGHT, 1.0f);
+						const float margin_bottom = get_stylebox_margin_or(theme_cache.stylebox.footnote_ref, SIDE_BOTTOM, 0.0f);
+						const float ref_offset = static_cast<float>(theme_cache.font_size.footnote_ref) * 0.35f;
+						const Rect2 ref_rect = Rect2(x_base + selected_range.x - margin_left, y - ref_offset - margin_top, selected_range.y - selected_range.x + margin_left + margin_right, line_size.y + margin_top + margin_bottom);
+						draw_stylebox_or_rect(theme_cache.stylebox.footnote_ref, ref_rect, Color());
 					}
 					if (p_draw_link_underlines && span.strikethrough) {
 							const float strike_y = y + line_size.y * 0.5f;
@@ -1537,6 +1673,9 @@ void MarkdownLabelCanvas::draw_paragraph_text(const Ref<TextParagraph>& p_paragr
 				if (!span.link_uri.is_empty()) {
 					span_color = link_color;
 				}
+				else if (span.footnote_ref) {
+					span_color = theme_cache.color.footnote_ref;
+				}
 				else if (span.highlight) {
 					span_color = theme_cache.color.highlight_font;
 				}
@@ -1551,7 +1690,11 @@ void MarkdownLabelCanvas::draw_paragraph_text(const Ref<TextParagraph>& p_paragr
 				const PackedVector2Array selected_ranges = text_server->shaped_text_get_selection(line_rid, local_from, local_to);
 				for (int32_t range_index = 0; range_index < selected_ranges.size(); range_index++) {
 					const Vector2 selected_range = selected_ranges[range_index];
-					text_server->shaped_text_draw(line_rid, canvas, line_position, selected_range.x, selected_range.y, span_color);
+					Vector2 draw_position = line_position;
+					if (span.footnote_ref) {
+						draw_position.y -= static_cast<float>(theme_cache.font_size.footnote_ref) * 0.35f;
+					}
+					text_server->shaped_text_draw(line_rid, canvas, draw_position, selected_range.x, selected_range.y, span_color);
 				}
 			}
 		}
@@ -1889,6 +2032,79 @@ String MarkdownLabelCanvas::image_tooltip_at_position(const Vector2& p_position)
 	return String();
 }
 
+String MarkdownLabelCanvas::footnote_id_at_character(int64_t p_character, bool p_reference) const {
+	for (const MarkdownCanvasItem& item : items) {
+		if (p_character < item.global_start || p_character > item.global_end) {
+			continue;
+		}
+
+		if (!p_reference && item.type == MARKDOWN_BLOCK_FOOTNOTES) {
+			for (int32_t footnote_index = 0; footnote_index < static_cast<int32_t>(item.footnote_ids.size()); footnote_index++) {
+				if (footnote_index < static_cast<int32_t>(item.footnote_starts.size()) && footnote_index < static_cast<int32_t>(item.footnote_ends.size())) {
+					const int64_t start = item.paragraph_global_start + item.footnote_starts[footnote_index];
+					const int64_t end = item.paragraph_global_start + item.footnote_ends[footnote_index];
+					if (p_character >= start && p_character <= end) {
+						return item.footnote_ids[footnote_index];
+					}
+				}
+			}
+		}
+
+		if (item.type == MARKDOWN_BLOCK_TABLE) {
+			for (const MarkdownTableCell& cell : item.cells) {
+				if (p_character >= cell.global_start && p_character <= cell.global_end) {
+					const int64_t local_character = p_character - cell.global_start;
+					for (const MarkdownInlineSpan& span : cell.spans) {
+						if (span.footnote_ref == p_reference && !span.footnote_id.is_empty() && local_character >= span.start && local_character <= span.end) {
+							return span.footnote_id;
+						}
+					}
+				}
+			}
+			continue;
+		}
+
+		if (item.type == MARKDOWN_BLOCK_BLOCKQUOTE) {
+			for (const MarkdownBlockquoteLine& line : item.quote_lines) {
+				if (p_character >= line.global_start && p_character <= line.global_end) {
+					const int64_t local_character = p_character - line.global_start;
+					for (const MarkdownInlineSpan& span : line.spans) {
+						if (span.footnote_ref == p_reference && !span.footnote_id.is_empty() && local_character >= span.start && local_character <= span.end) {
+							return span.footnote_id;
+						}
+					}
+				}
+			}
+			continue;
+		}
+
+		if (p_character >= item.paragraph_global_start && p_character <= item.paragraph_global_end) {
+			const int64_t local_character = p_character - item.paragraph_global_start;
+			for (const MarkdownInlineSpan& span : item.spans) {
+				if (span.footnote_ref == p_reference && !span.footnote_id.is_empty() && local_character >= span.start && local_character <= span.end) {
+					return span.footnote_id;
+				}
+			}
+		}
+	}
+	return String();
+}
+
+float MarkdownLabelCanvas::footnote_target_at_position(const Vector2& p_position) const {
+	const int64_t character = hit_test_document(p_position);
+	const String reference_id = footnote_id_at_character(character, true);
+	if (!reference_id.is_empty() && footnote_definition_offsets.has(reference_id)) {
+		return footnote_definition_offsets[reference_id];
+	}
+
+	const String definition_id = footnote_id_at_character(character, false);
+	if (!definition_id.is_empty() && footnote_reference_offsets.has(definition_id)) {
+		return footnote_reference_offsets[definition_id];
+	}
+
+	return -1.0f;
+}
+
 void MarkdownLabelCanvas::_gui_input(const Ref<InputEvent>& p_event) {
 	if (label == nullptr) {
 		return;
@@ -1930,6 +2146,16 @@ void MarkdownLabelCanvas::_gui_input(const Ref<InputEvent>& p_event) {
 					if (!uri.is_empty()) {
 						label->activate_link_uri(uri);
 					}
+					else {
+						const float footnote_target = footnote_target_at_position(up_position);
+						if (footnote_target >= 0.0f) {
+							VScrollBar* v_scroll = label->get_v_scroll_bar();
+							if (v_scroll != nullptr) {
+								const float max_scroll = std::max<float>(0.0f, v_scroll->get_max() - v_scroll->get_page());
+								v_scroll->set_value(std::min<float>(std::max<float>(0.0f, footnote_target - 8.0f), max_scroll));
+							}
+						}
+					}
 				}
 				accept_event();
 				return;
@@ -1955,11 +2181,14 @@ void MarkdownLabelCanvas::_gui_input(const Ref<InputEvent>& p_event) {
 
 		const String uri = link_uri_at_position(mouse_motion->get_position());
 		const String img_tip = image_tooltip_at_position(mouse_motion->get_position());
-		set_default_cursor_shape((!uri.is_empty() || !img_tip.is_empty()) ? CURSOR_POINTING_HAND : CURSOR_ARROW);
+		const float footnote_target = footnote_target_at_position(mouse_motion->get_position());
+		set_default_cursor_shape((!uri.is_empty() || !img_tip.is_empty() || footnote_target >= 0.0f) ? CURSOR_POINTING_HAND : CURSOR_ARROW);
 		if (!uri.is_empty()) {
 			set_tooltip_text(uri);
 		} else if (!img_tip.is_empty()) {
 			set_tooltip_text(img_tip);
+		} else if (footnote_target >= 0.0f) {
+			set_tooltip_text(String());
 		} else {
 			set_tooltip_text(String());
 		}

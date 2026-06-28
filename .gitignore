@@ -365,7 +365,7 @@ FodyWeavers.xsd
 .sconsign.dblite
 AGENTS.md
 .vscode/
-addons/rst_viewer/tests/
+!addons/markdown_label/bin
 
 !addons/rst_viewer/bin
 CLAUDE.md

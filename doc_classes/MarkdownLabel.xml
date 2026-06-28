@@ -1,0 +1,406 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="MarkdownLabel" inherits="Control" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/godotengine/godot/master/doc/class.xsd">
+	<brief_description>
+		A Control node for rendering Markdown text with scroll, text selection, search, and streaming support.
+	</brief_description>
+	<description>
+		MarkdownLabel is a [Control] node that renders Markdown text. It provides scrolling, text selection, text search, link click detection, and streaming text support suitable for real-time output (e.g., AI chat).
+
+		Supported Markdown features:
+		- ATX headings (h1–h6)
+		- Fenced code blocks with optional language tag
+		- Blockquotes (including nested)
+		- Ordered and unordered lists, task lists
+		- Thematic breaks (horizontal rules)
+		- Inline formatting: bold, italic, bold-italic, inline code, strikethrough, ==highlight==
+		- Links ([code][url]text[/url][/code]) and images
+		- Footnotes ([code][^id][/code] reference and [code][^id]: definition[/code])
+		- Tables
+
+		[b]Streaming:[/b] When [member streaming_enabled] is [code]true[/code], [method append_text] performs incremental re-parsing of only the unstable tail region (controlled by [member max_unstable_lines]). Call [method finish_stream] after the last append to force a full re-parse for correct final layout.
+
+		[b]Theme:[/b] All visual properties are read from the Godot theme system under the type name [code]"MarkdownLabel"[/code]. See the project documentation for the complete list of theme properties (fonts, font sizes, colors, styleboxes, constants, and icons).
+
+		[b]Note:[/b] This node programmatically creates its internal scroll container, margin container, and canvas children in [constant Node.NOTIFICATION_ENTER_TREE]. Do not add child nodes manually.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="activate_link_uri">
+			<return type="void" />
+			<param index="0" name="uri" type="String" />
+			<description>
+				Activates the given link URI. Emits the [signal link_pressed] signal. If [member open_external_links] is [code]true[/code] and the URI starts with [code]http://[/code] or [code]https://[/code], opens it in the system default browser.
+			</description>
+		</method>
+		<method name="append_text">
+			<return type="void" />
+			<param index="0" name="delta" type="String" />
+			<description>
+				Appends [param delta] to the current Markdown text. When [member streaming_enabled] is [code]true[/code], only the unstable tail region is re-parsed for performance. When [member auto_scroll] is [code]true[/code] and the scroll bar is near the bottom, the view automatically scrolls to stay at the bottom.
+			</description>
+		</method>
+		<method name="clear">
+			<return type="void" />
+			<description>
+				Clears all Markdown text and resets the document state. Emits [signal text_changed].
+			</description>
+		</method>
+		<method name="clear_selection">
+			<return type="void" />
+			<description>
+				Clears the current text selection.
+			</description>
+		</method>
+		<method name="finish_stream">
+			<return type="void" />
+			<description>
+				Forces a full re-parse of the entire document. Call this after the last [method append_text] call to ensure correct final layout. Respects [member auto_scroll] behavior.
+			</description>
+		</method>
+		<method name="get_anchors" qualifiers="const">
+			<return type="PackedStringArray" />
+			<description>
+				Returns the list of all heading anchor IDs in the document.
+			</description>
+		</method>
+		<method name="get_content_height" qualifiers="const">
+			<return type="float" />
+			<description>
+				Returns the total content height in pixels, or [code]1.0[/code] if the canvas has not been created yet.
+			</description>
+		</method>
+		<method name="get_content_margin" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns the content margin in pixels. The default value is [code]16[/code].
+			</description>
+		</method>
+		<method name="get_extra_font_size" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns the additional font size added to all text in the document. The default value is [code]0[/code].
+			</description>
+		</method>
+		<method name="get_h_scroll_bar" qualifiers="const">
+			<return type="HScrollBar" />
+			<description>
+				Returns the internal horizontal scroll bar, or [code]null[/code] if the control has not been created yet. Typically not useful since horizontal scrolling is disabled by default.
+			</description>
+		</method>
+		<method name="get_link_uri_at_point">
+			<return type="String" />
+			<param index="0" name="position" type="Vector2" />
+			<description>
+				Returns the URI of the link at the given local position (relative to the MarkdownLabel), or an empty string if no link is under the position.
+			</description>
+		</method>
+		<method name="get_markdown_text" qualifiers="const">
+			<return type="String" />
+			<description>
+				Returns the current raw Markdown text.
+			</description>
+		</method>
+		<method name="get_max_unstable_lines" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns the maximum number of unstable lines used for incremental re-parsing. The default value is [code]32[/code].
+			</description>
+		</method>
+		<method name="get_menu">
+			<return type="PopupMenu" />
+			<description>
+				Returns the internal [PopupMenu] used for the context menu. The menu is lazily created on first access.
+			</description>
+		</method>
+		<method name="get_open_external_links" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if external links (http/https) are automatically opened in the system browser.
+			</description>
+		</method>
+		<method name="get_rendered_block_count" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns the number of rendered top-level Markdown blocks, or [code]0[/code] if the canvas has not been created yet.
+			</description>
+		</method>
+		<method name="get_selected_text" qualifiers="const">
+			<return type="String" />
+			<description>
+				Returns the currently selected plain text, or an empty string if nothing is selected.
+			</description>
+		</method>
+		<method name="get_v_scroll_bar" qualifiers="const">
+			<return type="VScrollBar" />
+			<description>
+				Returns the internal vertical scroll bar, or [code]null[/code] if the control has not been created yet.
+			</description>
+		</method>
+		<method name="has_anchor" qualifiers="const">
+			<return type="bool" />
+			<param index="0" name="anchor" type="String" />
+			<description>
+				Returns [code]true[/code] if the document contains a heading with the given anchor ID.
+			</description>
+		</method>
+		<method name="is_auto_scroll" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if auto-scroll is enabled. The default value is [code]true[/code].
+			</description>
+		</method>
+		<method name="is_context_menu_enabled" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if the right-click context menu is enabled. The default value is [code]false[/code].
+			</description>
+		</method>
+		<method name="is_deselect_on_focus_loss_enabled" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if the selection is automatically cleared when the node loses focus. The default value is [code]true[/code].
+			</description>
+		</method>
+		<method name="is_drag_and_drop_selection_enabled" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if drag-and-drop of selected text is enabled. The default value is [code]true[/code].
+			</description>
+		</method>
+		<method name="is_menu_visible" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if the context menu is currently visible.
+			</description>
+		</method>
+		<method name="is_selection_enabled" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if text selection is enabled. The default value is [code]true[/code].
+			</description>
+		</method>
+		<method name="is_shortcut_keys_enabled" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if keyboard shortcuts (Ctrl+C, Ctrl+A) are enabled. The default value is [code]true[/code].
+			</description>
+		</method>
+		<method name="is_streaming_enabled" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if streaming mode is enabled. The default value is [code]false[/code].
+			</description>
+		</method>
+		<method name="load_markdown_file">
+			<return type="int" enum="Error" />
+			<param index="0" name="path" type="String" />
+			<description>
+				Loads Markdown text from the file at [param path] and sets it as the document content. Returns [constant OK] on success, or an error code such as [constant ERR_FILE_CANT_OPEN] if the file could not be opened. Emits [signal text_changed] on success.
+			</description>
+		</method>
+		<method name="menu_option">
+			<return type="void" />
+			<param index="0" name="option" type="int" />
+			<description>
+				Handles a menu option selection by its identifier. Typically used with the IDs from the [enum MenuItems] enum.
+			</description>
+		</method>
+		<method name="refresh">
+			<return type="void" />
+			<description>
+				Marks the layout as dirty and triggers a redraw. Call this after changing theme properties to force a visual update.
+			</description>
+		</method>
+		<method name="scroll_to_anchor">
+			<return type="bool" />
+			<param index="0" name="anchor" type="String" />
+			<param index="1" name="align" type="float" default="0.0" />
+			<description>
+				Scrolls to the heading with the given anchor ID. [param align] controls where the anchor appears in the viewport: [code]0.0[/code] (top) to [code]1.0[/code] (bottom). Returns [code]false[/code] if the anchor does not exist.
+			</description>
+		</method>
+		<method name="scroll_to_search_result">
+			<return type="bool" />
+			<param index="0" name="align" type="float" default="0.0" />
+			<description>
+				Scrolls to the current search result (set by a previous [method search] call). [param align] controls where the result appears in the viewport: [code]0.0[/code] (top) to [code]1.0[/code] (bottom). Returns [code]false[/code] if there is no active search result.
+			</description>
+		</method>
+		<method name="search">
+			<return type="Vector2i" />
+			<param index="0" name="text" type="String" />
+			<param index="1" name="flags" type="int" />
+			<param index="2" name="from_line" type="int" />
+			<param index="3" name="from_column" type="int" />
+			<description>
+				Searches the document for [param text] starting from ([param from_line], [param from_column]). [param flags] is a bitmask: [code]1[/code] = match case, [code]2[/code] = whole words, [code]4[/code] = search backwards. Returns the line and column of the match as a [Vector2i], or [code]Vector2i(-1, -1)[/code] if no match was found. The match is highlighted on screen.
+			</description>
+		</method>
+		<method name="select_all">
+			<return type="void" />
+			<description>
+				Selects all text in the document.
+			</description>
+		</method>
+		<method name="set_auto_scroll">
+			<return type="void" />
+			<param index="0" name="enabled" type="bool" />
+			<description>
+				Sets whether auto-scroll is enabled. When [code]true[/code] and the scroll bar is near the bottom, the view automatically scrolls to stay at the bottom when text is appended (via [method append_text] or [method finish_stream]).
+			</description>
+		</method>
+		<method name="set_content_margin">
+			<return type="void" />
+			<param index="0" name="margin" type="int" />
+			<description>
+				Sets the content margin in pixels. Clamped to the range [code][0, 128][/code]. The default value is [code]16[/code].
+			</description>
+		</method>
+		<method name="set_context_menu_enabled">
+			<return type="void" />
+			<param index="0" name="enabled" type="bool" />
+			<description>
+				Sets whether the right-click context menu is enabled.
+			</description>
+		</method>
+		<method name="set_deselect_on_focus_loss_enabled">
+			<return type="void" />
+			<param index="0" name="enabled" type="bool" />
+			<description>
+				Sets whether the text selection is automatically cleared when the node loses focus.
+			</description>
+		</method>
+		<method name="set_drag_and_drop_selection_enabled">
+			<return type="void" />
+			<param index="0" name="enabled" type="bool" />
+			<description>
+				Sets whether drag-and-drop of selected text is enabled.
+			</description>
+		</method>
+		<method name="set_extra_font_size">
+			<return type="void" />
+			<param index="0" name="size" type="int" />
+			<description>
+				Sets an additional font size added to all text in the document. Clamped to the range [code][0, 16][/code]. Emits [signal extra_font_size_changed].
+			</description>
+		</method>
+		<method name="set_markdown_text">
+			<return type="void" />
+			<param index="0" name="text" type="String" />
+			<description>
+				Sets the Markdown text to render. Emits [signal text_changed]. Resets the current selection and search state.
+			</description>
+		</method>
+		<method name="set_max_unstable_lines">
+			<return type="void" />
+			<param index="0" name="lines" type="int" />
+			<description>
+				Sets the maximum number of unstable lines for incremental re-parsing in streaming mode. Clamped to the range [code][1, 256][/code]. The default value is [code]32[/code].
+			</description>
+		</method>
+		<method name="set_open_external_links">
+			<return type="void" />
+			<param index="0" name="enabled" type="bool" />
+			<description>
+				Sets whether external links (http/https) are automatically opened in the system default browser when clicked.
+			</description>
+		</method>
+		<method name="set_selection_enabled">
+			<return type="void" />
+			<param index="0" name="enabled" type="bool" />
+			<description>
+				Sets whether text selection with the mouse is enabled.
+			</description>
+		</method>
+		<method name="set_shortcut_keys_enabled">
+			<return type="void" />
+			<param index="0" name="enabled" type="bool" />
+			<description>
+				Sets whether keyboard shortcuts (Ctrl+C to copy, Ctrl+A to select all) are enabled.
+			</description>
+		</method>
+		<method name="set_streaming_enabled">
+			<return type="void" />
+			<param index="0" name="enabled" type="bool" />
+			<description>
+				Sets whether streaming mode is enabled. When [code]true[/code], [method append_text] performs incremental re-parsing for better performance with real-time text output.
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="auto_scroll" type="bool" setter="set_auto_scroll" getter="is_auto_scroll" default="true">
+			If [code]true[/code], the view automatically scrolls to the bottom when text is appended and the scroll bar is already near the bottom.
+		</member>
+		<member name="content_margin" type="int" setter="set_content_margin" getter="get_content_margin" default="16">
+			The content margin in pixels. Controls the padding between the MarkdownLabel edges and the rendered content.
+		</member>
+		<member name="context_menu_enabled" type="bool" setter="set_context_menu_enabled" getter="is_context_menu_enabled" default="false">
+			If [code]true[/code], a context menu with Copy and Select All options appears on right-click.
+		</member>
+		<member name="deselect_on_focus_loss_enabled" type="bool" setter="set_deselect_on_focus_loss_enabled" getter="is_deselect_on_focus_loss_enabled" default="true">
+			If [code]true[/code], the text selection is automatically cleared when the node loses focus.
+		</member>
+		<member name="drag_and_drop_selection_enabled" type="bool" setter="set_drag_and_drop_selection_enabled" getter="is_drag_and_drop_selection_enabled" default="true">
+			If [code]true[/code], selected text can be dragged and dropped to other controls.
+		</member>
+		<member name="extra_font_size" type="int" setter="set_extra_font_size" getter="get_extra_font_size" default="0">
+			Additional font size added to all text sizes in the document. Clamped to [code][0, 16][/code]. Can also be changed by the user with Ctrl+MouseWheel.
+		</member>
+		<member name="max_unstable_lines" type="int" setter="set_max_unstable_lines" getter="get_max_unstable_lines" default="32">
+			Maximum number of lines from the end of the document that are re-parsed on each [method append_text] call in streaming mode. Clamped to [code][1, 256][/code].
+		</member>
+		<member name="open_external_links" type="bool" setter="set_open_external_links" getter="get_open_external_links" default="true">
+			If [code]true[/code], clicking an http/https link opens it in the system default browser.
+		</member>
+		<member name="selection_enabled" type="bool" setter="set_selection_enabled" getter="is_selection_enabled" default="true">
+			If [code]true[/code], text can be selected with the mouse.
+		</member>
+		<member name="shortcut_keys_enabled" type="bool" setter="set_shortcut_keys_enabled" getter="is_shortcut_keys_enabled" default="true">
+			If [code]true[/code], keyboard shortcuts (Ctrl+C, Ctrl+A) are handled by the control.
+		</member>
+		<member name="streaming_enabled" type="bool" setter="set_streaming_enabled" getter="is_streaming_enabled" default="false">
+			If [code]true[/code], [method append_text] performs incremental re-parsing. Enable this for real-time text streaming scenarios.
+		</member>
+		<member name="text" type="String" setter="set_markdown_text" getter="get_markdown_text" default="&quot;&quot;">
+			The Markdown text to render. Setting this property resets the selection and search state.
+		</member>
+	</members>
+	<signals>
+		<signal name="extra_font_size_changed">
+			<param index="0" name="font_size" type="int" />
+			<description>
+				Emitted when [member extra_font_size] changes, either programmatically or via Ctrl+MouseWheel.
+			</description>
+		</signal>
+		<signal name="link_pressed">
+			<param index="0" name="uri" type="String" />
+			<description>
+				Emitted when a link is clicked. [param uri] is the target URL. If [member open_external_links] is [code]true[/code], http/https links are also opened in the browser automatically.
+			</description>
+		</signal>
+		<signal name="render_warning">
+			<param index="0" name="message" type="String" />
+			<param index="1" name="line" type="int" />
+			<description>
+				Emitted when the Markdown parser encounters a warning, such as a broken image or an unrecognized block type.
+			</description>
+		</signal>
+		<signal name="text_changed">
+			<description>
+				Emitted when the Markdown text changes via [method set_markdown_text], [method append_text], [method clear], or [method load_markdown_file].
+			</description>
+		</signal>
+	</signals>
+	<constants>
+		<constant name="MENU_COPY" value="0" enum="MenuItems">
+			Context menu item ID for the Copy action.
+		</constant>
+		<constant name="MENU_SELECT_ALL" value="1" enum="MenuItems">
+			Context menu item ID for the Select All action.
+		</constant>
+		<constant name="MENU_MAX" value="2" enum="MenuItems">
+			Represents the total number of menu items. Used for bounds checking.
+		</constant>
+	</constants>
+</class>

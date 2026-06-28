@@ -4,10 +4,15 @@
 #include <godot_cpp/classes/display_server.hpp>
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/global_constants.hpp>
+#include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/image_texture.hpp>
 #include <godot_cpp/classes/input_event_key.hpp>
 #include <godot_cpp/classes/input_event_mouse_button.hpp>
 #include <godot_cpp/classes/input_event_mouse_motion.hpp>
+#include <godot_cpp/classes/input_map.hpp>
+#include <godot_cpp/classes/label.hpp>
 #include <godot_cpp/classes/os.hpp>
+#include <godot_cpp/classes/popup_menu.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
 #include <godot_cpp/classes/style_box_empty.hpp>
@@ -177,17 +182,214 @@ namespace {
 	}
 
 
-	static HashMap<String, Ref<Texture2D>> s_image_cache;
+	enum MarkdownImageLoadStatus {
+		MARKDOWN_IMAGE_READY,
+		MARKDOWN_IMAGE_LOADING,
+		MARKDOWN_IMAGE_FAILED,
+	};
 
-	static Ref<Texture2D> load_image_texture(const String& p_uri) {
+	struct MarkdownImageCacheEntry {
+		MarkdownImageLoadStatus status = MARKDOWN_IMAGE_FAILED;
+		Ref<Texture2D> texture;
+		String error;
+		double gif_elapsed = 0.0;
+	};
+
+	static HashMap<String, MarkdownImageCacheEntry> s_image_cache;
+	static HashMap<String, std::vector<uint64_t>> s_image_watchers;
+	static std::vector<String> s_pending_local_image_uris;
+	static int32_t s_live_image_canvas_count = 0;
+
+	static bool is_remote_image_uri(const String& p_uri) {
+		return p_uri.begins_with("http://") || p_uri.begins_with("https://");
+	}
+
+	static String image_uri_without_query(const String& p_uri) {
+		String clean_uri = p_uri;
+		const int64_t query_pos = clean_uri.find("?");
+		if (query_pos >= 0) {
+			clean_uri = clean_uri.substr(0, query_pos);
+		}
+		const int64_t hash_pos = clean_uri.find("#");
+		if (hash_pos >= 0) {
+			clean_uri = clean_uri.substr(0, hash_pos);
+		}
+		return clean_uri;
+	}
+
+	static bool is_gif_image_uri(const String& p_uri) {
+		return image_uri_without_query(p_uri).to_lower().ends_with(".gif");
+	}
+
+	static bool has_gif_plugin_support() {
+		static int32_t gif_support = -1;
+		if (gif_support < 0) {
+			gif_support = (ClassDB::class_exists("GIFTexture") || ClassDB::class_exists("GIFReader")) ? 1 : 0;
+		}
+		return gif_support == 1;
+	}
+
+	static void register_image_watcher(const String& p_uri, MarkdownLabelCanvas* p_canvas) {
+		if (p_canvas == nullptr) {
+			return;
+		}
+
+		std::vector<uint64_t>& watchers = s_image_watchers[p_uri];
+		const uint64_t instance_id = p_canvas->get_instance_id();
+		if (std::find(watchers.begin(), watchers.end(), instance_id) == watchers.end()) {
+			watchers.push_back(instance_id);
+		}
+	}
+
+	static void notify_image_watchers(const String& p_uri) {
+		if (!s_image_watchers.has(p_uri)) {
+			return;
+		}
+
+		std::vector<uint64_t> watchers = s_image_watchers[p_uri];
+		s_image_watchers.erase(p_uri);
+		for (uint64_t instance_id : watchers) {
+			Object* object = ObjectDB::get_instance(instance_id);
+			MarkdownLabelCanvas* canvas = Object::cast_to<MarkdownLabelCanvas>(object);
+			if (canvas != nullptr) {
+				canvas->refresh_image_content();
+			}
+		}
+	}
+
+	static bool has_pending_local_image_uri(const String& p_uri) {
+		return std::find(s_pending_local_image_uris.begin(), s_pending_local_image_uris.end(), p_uri) != s_pending_local_image_uris.end();
+	}
+
+	static void add_pending_local_image_uri(const String& p_uri) {
+		if (!has_pending_local_image_uri(p_uri)) {
+			s_pending_local_image_uris.push_back(p_uri);
+		}
+	}
+
+	static Ref<Texture2D> load_gif_texture_from_buffer(const PackedByteArray& p_body) {
+		if (!has_gif_plugin_support()) {
+			return Ref<Texture2D>();
+		}
+
+		Variant result = ClassDB::class_call_static("GIFTexture", "load_from_buffer", p_body);
+		Ref<Resource> resource = result;
+		Ref<Texture2D> texture = resource;
+		return texture;
+	}
+
+	static bool is_animated_gif_texture(const Ref<Texture2D>& p_texture) {
+		if (p_texture.is_null()) {
+			return false;
+		}
+
+		Object* texture_object = p_texture.ptr();
+		if (texture_object == nullptr || !texture_object->has_method("get_frame_count") || !texture_object->has_method("get_frame") || !texture_object->has_method("set_frame") || !texture_object->has_method("get_frame_delay")) {
+			return false;
+		}
+
+		return static_cast<int32_t>(texture_object->call("get_frame_count")) > 1;
+	}
+
+	static Ref<Texture2D> decode_image_texture_from_buffer(const String& p_uri, const PackedByteArray& p_body) {
+		if (p_body.is_empty()) {
+			return Ref<Texture2D>();
+		}
+
+		if (is_gif_image_uri(p_uri)) {
+			return load_gif_texture_from_buffer(p_body);
+		}
+
+		const String clean_uri = image_uri_without_query(p_uri).to_lower();
+		std::vector<int32_t> decode_order;
+		if (clean_uri.ends_with(".png")) {
+			decode_order = { 0, 1, 2 };
+		}
+		else if (clean_uri.ends_with(".jpg") || clean_uri.ends_with(".jpeg")) {
+			decode_order = { 1, 0, 2 };
+		}
+		else if (clean_uri.ends_with(".webp")) {
+			decode_order = { 2, 0, 1 };
+		}
+		else {
+			decode_order = { 0, 1, 2 };
+		}
+
+		for (int32_t decode_type : decode_order) {
+			Ref<Image> image;
+			image.instantiate();
+			Error error = ERR_UNAVAILABLE;
+			if (decode_type == 0) {
+				error = image->load_png_from_buffer(p_body);
+			}
+			else if (decode_type == 1) {
+				error = image->load_jpg_from_buffer(p_body);
+			}
+			else {
+				error = image->load_webp_from_buffer(p_body);
+			}
+
+			if (error == OK && image.is_valid() && !image->is_empty()) {
+				return ImageTexture::create_from_image(image);
+			}
+		}
+
+		if (has_gif_plugin_support()) {
+			return load_gif_texture_from_buffer(p_body);
+		}
+
+		return Ref<Texture2D>();
+	}
+
+	static MarkdownImageCacheEntry load_image_texture(const String& p_uri, MarkdownLabelCanvas* p_canvas) {
+		if (p_uri.is_empty()) {
+			MarkdownImageCacheEntry entry;
+			entry.status = MARKDOWN_IMAGE_FAILED;
+			entry.error = "empty_uri";
+			return entry;
+		}
+
 		if (s_image_cache.has(p_uri)) {
-			return s_image_cache[p_uri];
+			MarkdownImageCacheEntry entry = s_image_cache[p_uri];
+			if (entry.status == MARKDOWN_IMAGE_LOADING) {
+				register_image_watcher(p_uri, p_canvas);
+			}
+			return entry;
 		}
-		Ref<Texture2D> tex = ResourceLoader::get_singleton()->load(p_uri);
-		if (tex.is_valid()) {
-			s_image_cache[p_uri] = tex;
+
+		if (is_remote_image_uri(p_uri)) {
+			MarkdownImageCacheEntry entry;
+			if (is_gif_image_uri(p_uri) && !has_gif_plugin_support()) {
+				entry.status = MARKDOWN_IMAGE_FAILED;
+				entry.error = "gif_plugin_missing";
+				s_image_cache[p_uri] = entry;
+				return entry;
+			}
+
+			entry.status = MARKDOWN_IMAGE_LOADING;
+			s_image_cache[p_uri] = entry;
+			register_image_watcher(p_uri, p_canvas);
+			if (p_canvas != nullptr) {
+				p_canvas->request_remote_image(p_uri);
+			}
+			return entry;
 		}
-		return tex;
+
+		MarkdownImageCacheEntry entry;
+		if (is_gif_image_uri(p_uri) && !has_gif_plugin_support()) {
+			entry.status = MARKDOWN_IMAGE_FAILED;
+			entry.error = "gif_plugin_missing";
+			s_image_cache[p_uri] = entry;
+			return entry;
+		}
+
+		entry.status = MARKDOWN_IMAGE_LOADING;
+		s_image_cache[p_uri] = entry;
+		register_image_watcher(p_uri, p_canvas);
+		if (p_canvas != nullptr) {
+			p_canvas->request_local_image(p_uri);
+		}
+		return entry;
 	}
 
 	static Vector2 fit_texture_size(const Ref<Texture2D>& p_texture, float p_max_width) {
@@ -202,21 +404,40 @@ namespace {
 		return Vector2(std::max<float>(1.0f, texture_width * scale), std::max<float>(1.0f, texture_height * scale));
 	}
 
-	static void add_spans_to_paragraph(const Ref<TextParagraph>& p_paragraph, const String& p_text, const std::vector<MarkdownInlineSpan>& p_spans, const MarkdownThemeCache& p_cache, const Ref<Font>& p_normal_font, int32_t p_font_size, HashMap<String, Ref<Texture2D>>& p_image_map, float p_max_width) {
+	static void add_spans_to_paragraph(const Ref<TextParagraph>& p_paragraph, const String& p_text, const std::vector<MarkdownInlineSpan>& p_spans, const MarkdownThemeCache& p_cache, const Ref<Font>& p_normal_font, int32_t p_font_size, HashMap<String, Ref<Texture2D>>& p_image_map, float p_max_width, MarkdownLabelCanvas* p_canvas) {
 		int64_t pos = 0;
+		int32_t image_object_index = 0;
 		for (const MarkdownInlineSpan& span : p_spans) {
 			if (span.start > pos) {
 				p_paragraph->add_string(p_text.substr(pos, span.start - pos), p_normal_font, std::max<int32_t>(1, p_font_size));
 			}
 			if (!span.image_uri.is_empty()) {
-				Ref<Texture2D> tex = load_image_texture(span.image_uri);
-				if (tex.is_valid()) {
-					String name = String("img_") + String::num_int64(p_image_map.size());
-					p_image_map[name] = tex;
-					const int32_t object_length = std::max<int32_t>(1, static_cast<int32_t>(span.end - span.start));
-					p_paragraph->add_object(name, fit_texture_size(tex, p_max_width), INLINE_ALIGNMENT_CENTER, object_length);
+				MarkdownImageCacheEntry image_entry = load_image_texture(span.image_uri, p_canvas);
+				const bool image_ready = image_entry.status == MARKDOWN_IMAGE_READY;
+				const bool image_failed = image_entry.status == MARKDOWN_IMAGE_FAILED;
+				Ref<Texture2D> tex = image_ready ? image_entry.texture : (image_failed ? p_cache.icon.file_broken : Ref<Texture2D>());
+				if (tex.is_valid() || image_entry.status == MARKDOWN_IMAGE_LOADING) {
+					String name = String("img_") + String::num_int64(image_object_index++);
+					if (tex.is_valid()) {
+						p_image_map[name] = tex;
+					}
+					int32_t object_length = std::max<int32_t>(1, static_cast<int32_t>(span.end - span.start));
+					Vector2 object_size = tex.is_valid() ? fit_texture_size(tex, p_max_width) : Vector2(static_cast<float>(std::max<int32_t>(1, p_font_size)), static_cast<float>(std::max<int32_t>(1, p_font_size)));
+					if (!image_ready) {
+						object_length = 1;
+						const float broken_size = static_cast<float>(std::max<int32_t>(1, p_font_size));
+						object_size = Vector2(broken_size, broken_size);
+					}
+					p_paragraph->add_object(name, object_size, INLINE_ALIGNMENT_CENTER, object_length);
+					const String object_placeholder = String::chr(0xfffc);
+					if (image_failed && !span.text.is_empty() && span.text != object_placeholder) {
+						MarkdownInlineSpan fallback_span = span;
+						fallback_span.italic = true;
+						const Ref<Font> font = get_span_font(fallback_span, p_cache, p_normal_font);
+						p_paragraph->add_string(" " + span.text, font, std::max<int32_t>(1, p_font_size));
+					}
 				}
-				else {
+				else if (image_entry.status == MARKDOWN_IMAGE_FAILED && !span.text.is_empty() && span.text != String::chr(0xfffc)) {
 					MarkdownInlineSpan fallback_span = span;
 					fallback_span.italic = true;
 					const Ref<Font> font = get_span_font(fallback_span, p_cache, p_normal_font);
@@ -407,14 +628,12 @@ void MarkdownThemeCache::build(Control* p_owner, int32_t p_extra_font_size) {
 
 	stylebox.blockquote = get_theme_stylebox_or(p_owner, "MarkdownLabel", "blockquote_panel");
 	if (!stylebox.blockquote.is_valid()) {
-		const int32_t border_width = std::max<int32_t>(1, get_theme_constant_or(p_owner, "MarkdownLabel", "blockquote_border_width", 2));
-		stylebox.blockquote = create_internal_stylebox(Color(0.0f, 0.0f, 0.0f, 0.196f), Color(0.458f, 0.458f, 0.458f, 1.0f), border_width, 0, 0, 0, 16.0f, 16.0f, 8.0f, 16.0f, 0, false);
+		stylebox.blockquote = create_internal_stylebox(Color(0.0f, 0.0f, 0.0f, 0.196f), Color(0.458f, 0.458f, 0.458f, 1.0f), 2, 0, 0, 0, 16.0f, 16.0f, 8.0f, 16.0f, 0, false);
 	}
 
 	stylebox.blockquote_nested = get_theme_stylebox_or(p_owner, "MarkdownLabel", "blockquote_nested");
 	if (!stylebox.blockquote_nested.is_valid()) {
-		const int32_t border_width = std::max<int32_t>(1, get_theme_constant_or(p_owner, "MarkdownLabel", "blockquote_nested_border_width", get_theme_constant_or(p_owner, "MarkdownLabel", "blockquote_border_width", 2)));
-		stylebox.blockquote_nested = create_internal_stylebox(Color(0.0f, 0.0f, 0.0f, 0.196f), Color(0.458f, 0.458f, 0.458f, 1.0f), border_width, 0, 0, 0, 16.0f, 16.0f, 8.0f, 16.0f, 0, false);
+		stylebox.blockquote_nested = stylebox.blockquote;
 	}
 
 	stylebox.search_result = get_theme_stylebox_or(p_owner, "MarkdownLabel", "search_result");
@@ -461,9 +680,26 @@ void MarkdownThemeCache::build(Control* p_owner, int32_t p_extra_font_size) {
 	if (!icon.task_unchecked.is_valid()) {
 		icon.task_unchecked = ResourceLoader::get_singleton()->load("uid://wgx35yuv1sh3");
 	}
+	icon.file_broken = get_theme_icon_or(p_owner, "MarkdownLabel", "file_broken");
+	if (!icon.file_broken.is_valid()) {
+		icon.file_broken = ResourceLoader::get_singleton()->load("uid://cn51pvobw1gxd");
+	}
 }
 
 // MarkdownLabelCanvas
+MarkdownLabelCanvas::MarkdownLabelCanvas() {
+	s_live_image_canvas_count++;
+}
+
+MarkdownLabelCanvas::~MarkdownLabelCanvas() {
+	s_live_image_canvas_count = std::max<int32_t>(0, s_live_image_canvas_count - 1);
+	if (s_live_image_canvas_count == 0) {
+		s_image_watchers.clear();
+		s_pending_local_image_uris.clear();
+		s_image_cache.clear();
+	}
+}
+
 void MarkdownLabelCanvas::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_markdown_text", "text"), &MarkdownLabelCanvas::set_markdown_text);
 	ClassDB::bind_method(D_METHOD("append_text_incremental", "delta"), &MarkdownLabelCanvas::append_text_incremental);
@@ -499,9 +735,11 @@ void MarkdownLabelCanvas::set_markdown_text(const String& p_text) {
 	search_match_end = -1;
 	dragging_selection = false;
 	selection_dragged = false;
+	selection_drag_attempt = false;
 	parser_state.reset();
 	cached_blocks.clear();
 	layout_prefix_reuse_requested = false;
+	internal_processing_enabled = false;
 	set_process_internal(false);
 	mark_layout_dirty();
 }
@@ -550,6 +788,8 @@ void MarkdownLabelCanvas::clear_document() {
 	search_match_end = -1;
 	dragging_selection = false;
 	selection_dragged = false;
+	selection_drag_attempt = false;
+	internal_processing_enabled = false;
 	set_process_internal(false);
 	content_height = 1.0f;
 	layout_dirty = false;
@@ -567,6 +807,189 @@ void MarkdownLabelCanvas::set_max_unstable_lines(int32_t p_lines) {
 	max_unstable_lines = std::max<int32_t>(1, std::min<int32_t>(p_lines, 256));
 }
 
+void MarkdownLabelCanvas::request_local_image(const String& p_uri) {
+	if (p_uri.is_empty() || !s_image_cache.has(p_uri) || s_image_cache[p_uri].status != MARKDOWN_IMAGE_LOADING) {
+		return;
+	}
+
+	if (has_pending_local_image_uri(p_uri)) {
+		update_internal_processing();
+		return;
+	}
+
+	ResourceLoader* loader = ResourceLoader::get_singleton();
+	if (loader == nullptr) {
+		MarkdownImageCacheEntry entry;
+		entry.status = MARKDOWN_IMAGE_FAILED;
+		entry.error = "resource_loader_missing";
+		s_image_cache[p_uri] = entry;
+		notify_image_watchers(p_uri);
+		return;
+	}
+
+	const Error error = loader->load_threaded_request(p_uri, "Texture2D", true);
+	if (error != OK) {
+		MarkdownImageCacheEntry entry;
+		entry.status = MARKDOWN_IMAGE_FAILED;
+		entry.error = "threaded_request_failed";
+		s_image_cache[p_uri] = entry;
+		notify_image_watchers(p_uri);
+		return;
+	}
+
+	add_pending_local_image_uri(p_uri);
+	update_internal_processing();
+}
+
+void MarkdownLabelCanvas::request_remote_image(const String& p_uri) {
+	if (p_uri.is_empty() || !s_image_cache.has(p_uri) || s_image_cache[p_uri].status != MARKDOWN_IMAGE_LOADING) {
+		return;
+	}
+
+	HTTPRequest* request = memnew(HTTPRequest);
+	request->set_name("_MarkdownImageRequest");
+	request->set_use_threads(true);
+	request->set_timeout(12.0);
+	request->set_body_size_limit(8 * 1024 * 1024);
+	request->set_max_redirects(8);
+	const uint64_t request_id = request->get_instance_id();
+	request->connect("request_completed", callable_mp(this, &MarkdownLabelCanvas::on_image_request_completed).bind(p_uri, request_id));
+	add_child(request, false, Node::INTERNAL_MODE_BACK);
+
+	const Error error = request->request(p_uri);
+	if (error != OK) {
+		MarkdownImageCacheEntry entry;
+		entry.status = MARKDOWN_IMAGE_FAILED;
+		entry.error = "request_start_failed";
+		s_image_cache[p_uri] = entry;
+		request->queue_free();
+		notify_image_watchers(p_uri);
+	}
+	update_internal_processing();
+}
+
+void MarkdownLabelCanvas::on_image_request_completed(int32_t p_result, int32_t p_response_code, const PackedStringArray& p_headers, const PackedByteArray& p_body, const String& p_uri, uint64_t p_request_id) {
+	(void)p_headers;
+
+	MarkdownImageCacheEntry entry;
+	if (p_result == HTTPRequest::RESULT_SUCCESS && p_response_code >= 200 && p_response_code < 300) {
+		Ref<Texture2D> texture = decode_image_texture_from_buffer(p_uri, p_body);
+		if (texture.is_valid()) {
+			entry.status = MARKDOWN_IMAGE_READY;
+			entry.texture = texture;
+		}
+		else {
+			entry.status = MARKDOWN_IMAGE_FAILED;
+			entry.error = "decode_failed";
+		}
+	}
+	else {
+		entry.status = MARKDOWN_IMAGE_FAILED;
+		entry.error = "request_failed";
+	}
+
+	s_image_cache[p_uri] = entry;
+	Object* request_object = ObjectDB::get_instance(p_request_id);
+	HTTPRequest* request = Object::cast_to<HTTPRequest>(request_object);
+	if (request != nullptr) {
+		request->queue_free();
+	}
+	notify_image_watchers(p_uri);
+	update_internal_processing();
+}
+
+void MarkdownLabelCanvas::refresh_image_content() {
+	mark_layout_dirty();
+}
+
+bool MarkdownLabelCanvas::process_pending_local_images() {
+	if (s_pending_local_image_uris.empty()) {
+		return false;
+	}
+
+	ResourceLoader* loader = ResourceLoader::get_singleton();
+	if (loader == nullptr) {
+		return false;
+	}
+
+	std::vector<String> remaining;
+	for (const String& uri : s_pending_local_image_uris) {
+		if (!s_image_cache.has(uri) || s_image_cache[uri].status != MARKDOWN_IMAGE_LOADING) {
+			continue;
+		}
+
+		const ResourceLoader::ThreadLoadStatus status = loader->load_threaded_get_status(uri);
+		if (status == ResourceLoader::THREAD_LOAD_IN_PROGRESS) {
+			remaining.push_back(uri);
+			continue;
+		}
+
+		MarkdownImageCacheEntry entry;
+		if (status == ResourceLoader::THREAD_LOAD_LOADED) {
+			Ref<Resource> resource = loader->load_threaded_get(uri);
+			Ref<Texture2D> texture = resource;
+			if (texture.is_valid()) {
+				entry.status = MARKDOWN_IMAGE_READY;
+				entry.texture = texture;
+			}
+			else {
+				entry.status = MARKDOWN_IMAGE_FAILED;
+				entry.error = "resource_not_texture";
+			}
+		}
+		else {
+			entry.status = MARKDOWN_IMAGE_FAILED;
+			entry.error = "threaded_load_failed";
+		}
+
+		s_image_cache[uri] = entry;
+		notify_image_watchers(uri);
+	}
+
+	s_pending_local_image_uris = remaining;
+	return !s_pending_local_image_uris.empty();
+}
+
+bool MarkdownLabelCanvas::update_gif_animations(double p_delta) {
+	bool has_animated_gif = false;
+	for (const KeyValue<String, MarkdownImageCacheEntry>& key_value : s_image_cache) {
+		if (key_value.value.status != MARKDOWN_IMAGE_READY || !is_animated_gif_texture(key_value.value.texture)) {
+			continue;
+		}
+
+		Object* texture_object = key_value.value.texture.ptr();
+		if (texture_object == nullptr) {
+			continue;
+		}
+
+		const int32_t frame_count = static_cast<int32_t>(texture_object->call("get_frame_count"));
+		if (frame_count <= 1) {
+			continue;
+		}
+
+		has_animated_gif = true;
+		MarkdownImageCacheEntry& entry = s_image_cache[key_value.key];
+		const int32_t frame = static_cast<int32_t>(texture_object->call("get_frame"));
+		const double delay = std::max<double>(0.01, static_cast<double>(texture_object->call("get_frame_delay", frame)));
+		entry.gif_elapsed += p_delta;
+		if (entry.gif_elapsed >= delay) {
+			entry.gif_elapsed = 0.0;
+			texture_object->call("set_frame", (frame + 1) % frame_count);
+			queue_redraw();
+		}
+	}
+
+	return has_animated_gif;
+}
+
+void MarkdownLabelCanvas::update_internal_processing() {
+	const bool should_process = !s_pending_local_image_uris.empty() || dragging_selection || update_gif_animations(0.0);
+	if (internal_processing_enabled != should_process) {
+		internal_processing_enabled = should_process;
+		set_process_internal(should_process);
+	}
+}
+
 void MarkdownLabelCanvas::mark_layout_dirty() {
 	layout_dirty = true;
 	queue_redraw();
@@ -574,6 +997,20 @@ void MarkdownLabelCanvas::mark_layout_dirty() {
 
 bool MarkdownLabelCanvas::has_selection() const {
 	return selection_anchor != selection_caret;
+}
+
+bool MarkdownLabelCanvas::is_character_selected(int64_t p_character) const {
+	const int64_t from = std::min<int64_t>(selection_anchor, selection_caret);
+	const int64_t to = std::max<int64_t>(selection_anchor, selection_caret);
+	return from < to && p_character >= from && p_character <= to;
+}
+
+bool MarkdownLabelCanvas::is_position_inside_selection(const Vector2& p_position) {
+	if (!has_selection()) {
+		return false;
+	}
+	rebuild_layout();
+	return is_character_selected(hit_test_document(p_position));
 }
 
 void MarkdownLabelCanvas::select_all() {
@@ -597,6 +1034,7 @@ String MarkdownLabelCanvas::get_link_uri_at_point(const Vector2& p_position) {
 
 
 void MarkdownLabelCanvas::clear_selection() {
+	selection_drag_attempt = false;
 	selection_anchor = selection_caret;
 	queue_redraw();
 }
@@ -663,6 +1101,107 @@ String MarkdownLabelCanvas::get_selected_text() const {
 	}
 
 	return plain_text.substr(static_cast<int32_t>(from), static_cast<int32_t>(to - from));
+}
+
+Variant MarkdownLabelCanvas::_get_drag_data(const Vector2& p_at_position) {
+	Variant drag_data = Control::_get_drag_data(p_at_position);
+	if (drag_data.get_type() != Variant::NIL) {
+		return drag_data;
+	}
+
+	if (label == nullptr || !label->is_drag_and_drop_selection_enabled() || !selection_drag_attempt) {
+		return Variant();
+	}
+
+	const String selected_text = get_selected_text();
+	if (selected_text.is_empty()) {
+		return Variant();
+	}
+
+	Label* preview = memnew(Label);
+	preview->set_text(selected_text);
+	preview->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
+	preview->set_auto_translate_mode(Node::AUTO_TRANSLATE_MODE_DISABLED);
+	set_drag_preview(preview);
+	return selected_text;
+}
+
+void MarkdownLabelCanvas::_generate_context_menu() {
+	menu = memnew(PopupMenu);
+	add_child(menu, false, Node::INTERNAL_MODE_FRONT);
+	menu->connect("id_pressed", callable_mp(this, &MarkdownLabelCanvas::menu_option));
+
+	menu->add_item("Copy", MarkdownLabel::MENU_COPY);
+	menu->add_item("Select All", MarkdownLabel::MENU_SELECT_ALL);
+}
+
+void MarkdownLabelCanvas::_update_context_menu() {
+	if (menu == nullptr) {
+		_generate_context_menu();
+	}
+
+	int32_t idx = menu->get_item_index(MarkdownLabel::MENU_COPY);
+	if (idx >= 0) {
+		menu->set_item_accelerator(idx, label != nullptr && label->is_shortcut_keys_enabled() ? _get_menu_action_accelerator("ui_copy") : KEY_NONE);
+		menu->set_item_disabled(idx, label == nullptr || !label->is_selection_enabled());
+	}
+
+	idx = menu->get_item_index(MarkdownLabel::MENU_SELECT_ALL);
+	if (idx >= 0) {
+		menu->set_item_accelerator(idx, label != nullptr && label->is_shortcut_keys_enabled() ? _get_menu_action_accelerator("ui_text_select_all") : KEY_NONE);
+		menu->set_item_disabled(idx, label == nullptr || !label->is_selection_enabled());
+	}
+}
+
+Key MarkdownLabelCanvas::_get_menu_action_accelerator(const String &p_action) {
+	const TypedArray<Ref<InputEvent>> events = InputMap::get_singleton()->action_get_events(p_action);
+	if (events.is_empty()) {
+		return KEY_NONE;
+	}
+
+	const Ref<InputEvent> first_event = events[0];
+	if (first_event.is_null()) {
+		return KEY_NONE;
+	}
+
+	const Ref<InputEventKey> key_event = first_event;
+	if (key_event.is_null()) {
+		return KEY_NONE;
+	}
+
+	if (key_event->get_physical_keycode() != KEY_NONE) {
+		return key_event->get_physical_keycode_with_modifiers();
+	} else {
+		return key_event->get_keycode_with_modifiers();
+	}
+}
+
+PopupMenu *MarkdownLabelCanvas::get_menu() {
+	if (menu == nullptr) {
+		_generate_context_menu();
+	}
+	return menu;
+}
+
+bool MarkdownLabelCanvas::is_menu_visible() const {
+	return menu != nullptr && menu->is_visible();
+}
+
+void MarkdownLabelCanvas::menu_option(int p_option) {
+	switch (p_option) {
+		case MarkdownLabel::MENU_COPY: {
+			String txt = get_selected_text();
+			if (txt.is_empty()) {
+				txt = plain_text;
+			}
+			if (!txt.is_empty()) {
+				DisplayServer::get_singleton()->clipboard_set(txt);
+			}
+		} break;
+		case MarkdownLabel::MENU_SELECT_ALL: {
+			select_all();
+		} break;
+	}
 }
 
 int32_t MarkdownLabelCanvas::get_rendered_block_count() {
@@ -1167,7 +1706,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 				quote_line.paragraph.instantiate();
 				quote_line.paragraph->set_width(paragraph_width);
 				quote_line.paragraph->set_line_spacing(theme_cache.constant.line_separation);
-				add_spans_to_paragraph(quote_line.paragraph, quote_line.text, quote_line.spans, theme_cache, quote_font, quote_font_size, quote_line.image_map, paragraph_width);
+				add_spans_to_paragraph(quote_line.paragraph, quote_line.text, quote_line.spans, theme_cache, quote_font, quote_font_size, quote_line.image_map, paragraph_width, this);
 
 				const Vector2 paragraph_size = quote_line.paragraph->get_size();
 				const Vector2 inline_code_padding = get_inline_code_vertical_padding(quote_line.spans, theme_cache);
@@ -1255,8 +1794,6 @@ void MarkdownLabelCanvas::rebuild_layout() {
 			break;
 		case MARKDOWN_BLOCK_FOOTNOTES: {
 			item.type = MARKDOWN_BLOCK_FOOTNOTES;
-			item.panel_stylebox = theme_cache.stylebox.separator;
-			item.framed = true;
 			font = theme_cache.font.footnote_text;
 			font_size = theme_cache.font_size.footnote_text;
 			item.text_color = theme_cache.color.footnote_text;
@@ -1350,7 +1887,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 					if (col_idx < block.column_alignments.size()) {
 						cell.paragraph->set_alignment(static_cast<HorizontalAlignment>(block.column_alignments[col_idx]));
 					}
-					add_spans_to_paragraph(cell.paragraph, cell.text, cell.spans, theme_cache, cell_font, cell_font_size, cell.image_map, std::max<float>(1.0f, column_width - cell_left - cell_right));
+					add_spans_to_paragraph(cell.paragraph, cell.text, cell.spans, theme_cache, cell_font, cell_font_size, cell.image_map, std::max<float>(1.0f, column_width - cell_left - cell_right), this);
 
 					const float cell_height = cell.paragraph->get_size().y + cell_top + cell_bottom;
 					row_height = std::max<float>(row_height, cell_height);
@@ -1424,7 +1961,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 		item.paragraph.instantiate();
 		item.paragraph->set_width(std::max<float>(1.0f, width - left_padding - right_padding));
 		item.paragraph->set_line_spacing(item.type == MARKDOWN_BLOCK_FOOTNOTES ? theme_cache.constant.footnote_line_separation : theme_cache.constant.line_separation);
-		add_spans_to_paragraph(item.paragraph, item_text, item.spans, theme_cache, font, font_size, item.image_map, std::max<float>(1.0f, width - left_padding - right_padding));
+		add_spans_to_paragraph(item.paragraph, item_text, item.spans, theme_cache, font, font_size, item.image_map, std::max<float>(1.0f, width - left_padding - right_padding), this);
 
 		const Vector2 paragraph_size = item.paragraph->get_size();
 		const Vector2 inline_code_padding = get_inline_code_vertical_padding(item.spans, theme_cache);
@@ -1520,6 +2057,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 		search_match_end = -1;
 	}
 	layout_prefix_reuse_requested = false;
+	update_internal_processing();
 }
 
 void MarkdownLabelCanvas::draw_selection_for_item(const MarkdownCanvasItem& p_item) {
@@ -1817,19 +2355,37 @@ void MarkdownLabelCanvas::_notification(int p_what) {
 		mark_layout_dirty();
 	}
 
+	if (p_what == NOTIFICATION_PREDELETE) {
+		s_image_watchers.clear();
+		s_pending_local_image_uris.clear();
+		s_image_cache.clear();
+	}
+
 	if (p_what == NOTIFICATION_FOCUS_EXIT) {
 		if (label != nullptr && label->is_deselect_on_focus_loss_enabled()) {
 			clear_selection();
 		}
+		selection_drag_attempt = false;
+	}
+
+	if (p_what == NOTIFICATION_DRAG_END) {
+		selection_drag_attempt = false;
 	}
 
 	if (p_what == NOTIFICATION_INTERNAL_PROCESS) {
+		const double delta = get_process_delta_time();
+		const bool has_pending_images = process_pending_local_images();
+		const bool has_animated_gifs = update_gif_animations(delta);
 		if (!dragging_selection || !selection_dragged || label == nullptr) {
+			internal_processing_enabled = has_pending_images || has_animated_gifs;
+			set_process_internal(internal_processing_enabled);
 			return;
 		}
 
 		VScrollBar* v_scroll = label->get_v_scroll_bar();
 		if (v_scroll == nullptr) {
+			internal_processing_enabled = has_pending_images || has_animated_gifs;
+			set_process_internal(internal_processing_enabled);
 			return;
 		}
 
@@ -1843,11 +2399,11 @@ void MarkdownLabelCanvas::_notification(int p_what) {
 
 		if (above > 0.0f) {
 			const float base_speed = 80.0f;
-			scroll_delta = -base_speed * (above / scroll_margin) * static_cast<float>(get_process_delta_time());
+			scroll_delta = -base_speed * (above / scroll_margin) * static_cast<float>(delta);
 		}
 		else if (below > 0.0f) {
 			const float base_speed = 80.0f;
-			scroll_delta = base_speed * (below / scroll_margin) * static_cast<float>(get_process_delta_time());
+			scroll_delta = base_speed * (below / scroll_margin) * static_cast<float>(delta);
 		}
 
 		if (scroll_delta != 0.0f) {
@@ -1860,6 +2416,8 @@ void MarkdownLabelCanvas::_notification(int p_what) {
 			queue_redraw();
 		}
 
+		internal_processing_enabled = true;
+		set_process_internal(true);
 		return;
 	}
 
@@ -2269,6 +2827,17 @@ void MarkdownLabelCanvas::_gui_input(const Ref<InputEvent>& p_event) {
 		if (mouse_button->get_button_index() == MOUSE_BUTTON_LEFT) {
 			if (mouse_button->is_pressed()) {
 				press_position = mouse_button->get_position();
+				if (label->is_drag_and_drop_selection_enabled() && is_position_inside_selection(press_position)) {
+					selection_drag_attempt = true;
+					dragging_selection = false;
+					selection_dragged = false;
+					if (!has_focus()) {
+						grab_focus();
+					}
+					accept_event();
+					return;
+				}
+				selection_drag_attempt = false;
 				selection_anchor = hit_test_document(press_position);
 				selection_caret = selection_anchor;
 				queue_redraw();
@@ -2281,9 +2850,18 @@ void MarkdownLabelCanvas::_gui_input(const Ref<InputEvent>& p_event) {
 				return;
 			}
 
+			if (selection_drag_attempt) {
+				selection_drag_attempt = false;
+				if (is_position_inside_selection(mouse_button->get_position())) {
+					clear_selection();
+				}
+				accept_event();
+				return;
+			}
+
 			if (dragging_selection) {
 				dragging_selection = false;
-				set_process_internal(false);
+				update_internal_processing();
 				if (!selection_dragged) {
 					const Vector2 up_position = mouse_button->get_position();
 					const String uri = link_uri_at_position(up_position);
@@ -2306,17 +2884,33 @@ void MarkdownLabelCanvas::_gui_input(const Ref<InputEvent>& p_event) {
 			}
 			return;
 		}
+
+		if (mouse_button->get_button_index() == MOUSE_BUTTON_RIGHT && mouse_button->is_pressed() && label->is_context_menu_enabled()) {
+			get_menu();
+			_update_context_menu();
+			menu->set_position(get_screen_transform().xform(mouse_button->get_position()));
+			menu->reset_size();
+			menu->popup();
+			menu->grab_focus();
+			accept_event();
+			return;
+		}
 		return;
 	}
 
 	const Ref<InputEventMouseMotion> mouse_motion = p_event;
 	if (mouse_motion.is_valid()) {
+		if (selection_drag_attempt) {
+			return;
+		}
+
 		if (dragging_selection) {
 			const Vector2 current_position = mouse_motion->get_position();
 			if (current_position.distance_to(press_position) > 4.0f) {
 				selection_dragged = true;
 			}
 			selection_caret = hit_test_document(current_position);
+			internal_processing_enabled = true;
 			set_process_internal(true);
 			queue_redraw();
 			accept_event();
@@ -2326,7 +2920,7 @@ void MarkdownLabelCanvas::_gui_input(const Ref<InputEvent>& p_event) {
 		const String uri = link_uri_at_position(mouse_motion->get_position());
 		const String img_tip = image_tooltip_at_position(mouse_motion->get_position());
 		const float footnote_target = footnote_target_at_position(mouse_motion->get_position());
-		set_default_cursor_shape((!uri.is_empty() || !img_tip.is_empty() || footnote_target >= 0.0f) ? CURSOR_POINTING_HAND : CURSOR_ARROW);
+		set_default_cursor_shape((!uri.is_empty() || !img_tip.is_empty() || footnote_target >= 0.0f) ? CURSOR_POINTING_HAND : (label->is_selection_enabled() ? CURSOR_IBEAM : CURSOR_ARROW));
 		if (!uri.is_empty()) {
 			set_tooltip_text(uri);
 		} else if (!img_tip.is_empty()) {
@@ -2341,15 +2935,27 @@ void MarkdownLabelCanvas::_gui_input(const Ref<InputEvent>& p_event) {
 
 	const Ref<InputEventKey> key_event = p_event;
 	if (key_event.is_valid() && key_event->is_pressed()) {
-		if (key_event->is_ctrl_pressed() && key_event->get_keycode() == KEY_A) {
+		if (label->is_shortcut_keys_enabled() && key_event->is_action("ui_text_select_all", true)) {
 			select_all();
 			accept_event();
 			return;
 		}
-		if (key_event->is_ctrl_pressed() && key_event->get_keycode() == KEY_C) {
+		if (label->is_shortcut_keys_enabled() && key_event->is_action("ui_copy", true)) {
 			const String selected = get_selected_text();
 			if (!selected.is_empty()) {
 				DisplayServer::get_singleton()->clipboard_set(selected);
+			}
+			accept_event();
+			return;
+		}
+		if (key_event->is_action("ui_menu", true)) {
+			if (label->is_context_menu_enabled()) {
+				get_menu();
+				_update_context_menu();
+				menu->set_position(get_screen_position());
+				menu->reset_size();
+				menu->popup();
+				menu->grab_focus();
 			}
 			accept_event();
 			return;
@@ -2417,6 +3023,16 @@ void MarkdownLabel::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_h_scroll_bar"), &MarkdownLabel::get_h_scroll_bar);
 	ClassDB::bind_method(D_METHOD("get_v_scroll_bar"), &MarkdownLabel::get_v_scroll_bar);
 
+	ClassDB::bind_method(D_METHOD("set_context_menu_enabled", "enabled"), &MarkdownLabel::set_context_menu_enabled);
+	ClassDB::bind_method(D_METHOD("is_context_menu_enabled"), &MarkdownLabel::is_context_menu_enabled);
+
+	ClassDB::bind_method(D_METHOD("set_shortcut_keys_enabled", "enabled"), &MarkdownLabel::set_shortcut_keys_enabled);
+	ClassDB::bind_method(D_METHOD("is_shortcut_keys_enabled"), &MarkdownLabel::is_shortcut_keys_enabled);
+
+	ClassDB::bind_method(D_METHOD("get_menu"), &MarkdownLabel::get_menu);
+	ClassDB::bind_method(D_METHOD("is_menu_visible"), &MarkdownLabel::is_menu_visible);
+	ClassDB::bind_method(D_METHOD("menu_option", "option"), &MarkdownLabel::menu_option);
+
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "text", PROPERTY_HINT_MULTILINE_TEXT), "set_markdown_text", "get_markdown_text");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "content_margin", PROPERTY_HINT_RANGE, "0,128"), "set_content_margin", "get_content_margin");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "extra_font_size", PROPERTY_HINT_RANGE, "0,16"), "set_extra_font_size", "get_extra_font_size");
@@ -2424,6 +3040,8 @@ void MarkdownLabel::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "selection_enabled"), "set_selection_enabled", "is_selection_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "deselect_on_focus_loss_enabled"), "set_deselect_on_focus_loss_enabled", "is_deselect_on_focus_loss_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "drag_and_drop_selection_enabled"), "set_drag_and_drop_selection_enabled", "is_drag_and_drop_selection_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "context_menu_enabled"), "set_context_menu_enabled", "is_context_menu_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "shortcut_keys_enabled"), "set_shortcut_keys_enabled", "is_shortcut_keys_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "streaming_enabled"), "set_streaming_enabled", "is_streaming_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "max_unstable_lines", PROPERTY_HINT_RANGE, "1,256"), "set_max_unstable_lines", "get_max_unstable_lines");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "auto_scroll"), "set_auto_scroll", "is_auto_scroll");
@@ -2432,6 +3050,10 @@ void MarkdownLabel::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("text_changed"));
 	ADD_SIGNAL(MethodInfo("render_warning", PropertyInfo(Variant::STRING, "message"), PropertyInfo(Variant::INT, "line")));
 	ADD_SIGNAL(MethodInfo("extra_font_size_changed", PropertyInfo(Variant::INT, "font_size")));
+
+	BIND_ENUM_CONSTANT(MENU_COPY);
+	BIND_ENUM_CONSTANT(MENU_SELECT_ALL);
+	BIND_ENUM_CONSTANT(MENU_MAX);
 }
 
 void MarkdownLabel::ensure_controls() {
@@ -2655,12 +3277,47 @@ bool MarkdownLabel::is_drag_and_drop_selection_enabled() const {
 	return drag_and_drop_selection_enabled;
 }
 
+void MarkdownLabel::set_context_menu_enabled(bool p_enabled) {
+	context_menu_enabled = p_enabled;
+}
+
+bool MarkdownLabel::is_context_menu_enabled() const {
+	return context_menu_enabled;
+}
+
+void MarkdownLabel::set_shortcut_keys_enabled(bool p_enabled) {
+	shortcut_keys_enabled = p_enabled;
+}
+
+bool MarkdownLabel::is_shortcut_keys_enabled() const {
+	return shortcut_keys_enabled;
+}
+
 void MarkdownLabel::set_open_external_links(bool p_enabled) {
 	open_external_links = p_enabled;
 }
 
 bool MarkdownLabel::get_open_external_links() const {
 	return open_external_links;
+}
+
+PopupMenu *MarkdownLabel::get_menu() {
+	ensure_controls();
+	return canvas->get_menu();
+}
+
+bool MarkdownLabel::is_menu_visible() const {
+	if (canvas == nullptr) {
+		return false;
+	}
+	return canvas->is_menu_visible();
+}
+
+void MarkdownLabel::menu_option(int p_option) {
+	if (canvas == nullptr) {
+		return;
+	}
+	canvas->menu_option(p_option);
 }
 
 void MarkdownLabel::select_all() {

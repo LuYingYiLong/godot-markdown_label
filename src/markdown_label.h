@@ -5,6 +5,7 @@
 #include <godot_cpp/classes/control.hpp>
 #include <godot_cpp/classes/font.hpp>
 #include <godot_cpp/classes/h_scroll_bar.hpp>
+#include <godot_cpp/classes/http_request.hpp>
 #include <godot_cpp/classes/input_event.hpp>
 #include <godot_cpp/classes/margin_container.hpp>
 #include <godot_cpp/classes/ref.hpp>
@@ -15,9 +16,15 @@
 #include <godot_cpp/classes/v_scroll_bar.hpp>
 #include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/variant.hpp>
+#include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/packed_string_array.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
 
 #include <vector>
+
+namespace godot {
+class PopupMenu;
+}
 
 using namespace godot;
 
@@ -97,6 +104,7 @@ struct MarkdownThemeCache {
 	struct Icons {
 		Ref<Texture2D> task_checked;
 		Ref<Texture2D> task_unchecked;
+		Ref<Texture2D> file_broken;
 	} icon;
 
 	void build(Control* p_owner, int32_t p_extra_font_size);
@@ -117,6 +125,9 @@ private:
 	bool layout_dirty = true;
 	bool dragging_selection = false;
 	bool selection_dragged = false;
+	bool selection_drag_attempt = false;
+	bool internal_processing_enabled = false;
+	PopupMenu *menu = nullptr;
 	int64_t selection_anchor = 0;
 	int64_t selection_caret = 0;
 	int64_t search_match_start = -1;
@@ -139,6 +150,9 @@ private:
 
 	void mark_layout_dirty();
 	void build_theme_cache();
+	void _generate_context_menu();
+	void _update_context_menu();
+	Key _get_menu_action_accelerator(const String &p_action);
 	void rebuild_layout();
 	void draw_selection_for_item(const MarkdownCanvasItem& p_item);
 	void draw_selection_for_paragraph(const Ref<TextParagraph>& p_paragraph, const Rect2& p_text_rect, int64_t p_global_start, int64_t p_global_end);
@@ -159,13 +173,19 @@ private:
 	int64_t line_column_to_offset(int32_t p_line, int32_t p_column) const;
 	Vector2i offset_to_line_column(int64_t p_offset) const;
 	bool has_selection() const;
+	bool is_character_selected(int64_t p_character) const;
+	bool is_position_inside_selection(const Vector2& p_position);
 
 protected:
 	static void _bind_methods();
 	void _notification(int p_what);
 
 public:
+	MarkdownLabelCanvas();
+	~MarkdownLabelCanvas();
+
 	void _gui_input(const Ref<InputEvent>& p_event) override;
+	Variant _get_drag_data(const Vector2& p_at_position) override;
 	Vector2 _get_minimum_size() const override;
 
 	void set_label(MarkdownLabel* p_label);
@@ -175,6 +195,13 @@ public:
 	void clear_document();
 	void set_streaming_enabled(bool p_enabled);
 	void set_max_unstable_lines(int32_t p_lines);
+	void request_local_image(const String& p_uri);
+	void request_remote_image(const String& p_uri);
+	void on_image_request_completed(int32_t p_result, int32_t p_response_code, const PackedStringArray& p_headers, const PackedByteArray& p_body, const String& p_uri, uint64_t p_request_id);
+	void refresh_image_content();
+	void update_internal_processing();
+	bool process_pending_local_images();
+	bool update_gif_animations(double p_delta);
 	void select_all();
 	void select_between_points(const Vector2& p_from, const Vector2& p_to);
 	String get_link_uri_at_point(const Vector2& p_position);
@@ -188,10 +215,20 @@ public:
 	float get_anchor_offset(const String& p_anchor) const;
 	float get_search_result_y() const;
 	float get_bottom_position() const;
+	PopupMenu *get_menu();
+	bool is_menu_visible() const;
+	void menu_option(int p_option);
 };
 
 class MarkdownLabel : public Control {
 	GDCLASS(MarkdownLabel, Control);
+
+public:
+	enum MenuItems {
+		MENU_COPY,
+		MENU_SELECT_ALL,
+		MENU_MAX
+	};
 
 private:
 	String raw_text;
@@ -204,6 +241,8 @@ private:
 	bool selection_enabled = true;
 	bool deselect_on_focus_loss_enabled = true;
 	bool drag_and_drop_selection_enabled = true;
+	bool context_menu_enabled = false;
+	bool shortcut_keys_enabled = true;
 	bool streaming_enabled = false;
 	int32_t max_unstable_lines = 32;
 	bool auto_scroll = true;
@@ -248,6 +287,12 @@ public:
 	void set_drag_and_drop_selection_enabled(bool p_enabled);
 	bool is_drag_and_drop_selection_enabled() const;
 
+	void set_context_menu_enabled(bool p_enabled);
+	bool is_context_menu_enabled() const;
+
+	void set_shortcut_keys_enabled(bool p_enabled);
+	bool is_shortcut_keys_enabled() const;
+
 	void set_open_external_links(bool p_enabled);
 	bool get_open_external_links() const;
 
@@ -273,4 +318,10 @@ public:
 
 	HScrollBar* get_h_scroll_bar() const;
 	VScrollBar* get_v_scroll_bar() const;
+
+	PopupMenu *get_menu();
+	bool is_menu_visible() const;
+	void menu_option(int p_option);
 };
+
+VARIANT_ENUM_CAST(MarkdownLabel::MenuItems);

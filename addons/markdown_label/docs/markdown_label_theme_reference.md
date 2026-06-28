@@ -107,8 +107,6 @@ label.theme_type_variation = &"MarkdownLabel"
 
 | 属性名 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `blockquote_border_width` | int | 4 | 引用块左侧彩色边框宽度 |
-| `blockquote_nested_border_width` | int | `blockquote_border_width` | 嵌套引用块左侧边框宽度 |
 | `blockquote_indent` | int | 25 | 引用块缩进 |
 | `blockquote_line_gap` | int | 14 | 引用块内各行之间的间距 |
 
@@ -145,6 +143,7 @@ label.theme_type_variation = &"MarkdownLabel"
 |--------|------|------|
 | `task_checked` | Texture2D | 已完成任务复选框图标 |
 | `task_unchecked` | Texture2D | 未完成任务复选框图标 |
+| `file_broken` | Texture2D | 图片加载失败或不支持时显示的占位图标 |
 
 未设置时使用插件内置的默认图标。
 

@@ -23,6 +23,8 @@ text = "# Markdown 语法
 
 [![image](uid://fmmnj4gretid)](https://markdown.com.cn)
 
+![image](uid://fmmnj4gretid)
+
 ## 标题
 # 一级标题
 ## 二级标题
@@ -118,5 +120,6 @@ func _ready() -> void:
 ---
 
 _________________"
+context_menu_enabled = true
 layout_mode = 2
 theme = ExtResource("1_kh8ff")

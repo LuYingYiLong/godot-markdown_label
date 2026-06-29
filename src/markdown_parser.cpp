@@ -1145,6 +1145,7 @@ MarkdownParseResult parse_markdown_document(const String& p_text, const Markdown
 				flush_all();
 				MarkdownBlock block;
 				block.type = MARKDOWN_BLOCK_TABLE;
+				block.line = index + 1;
 				block.header_rows = 1;
 				block.columns = first_cells.size();
 
@@ -1350,6 +1351,10 @@ int32_t find_reparse_line(const std::vector<MarkdownBlock>& p_blocks, const std:
 
 	if (p_blocks.empty()) {
 		return 0;
+	}
+
+	if (p_blocks.back().type == MARKDOWN_BLOCK_TABLE) {
+		return std::max<int32_t>(0, p_blocks.back().line - 1);
 	}
 
 	int32_t last_block_line = p_blocks.back().line - 1;

@@ -17,7 +17,7 @@
 		- Footnotes ([code][^id][/code] reference and [code][^id]: definition[/code])
 		- Tables
 
-		[b]Streaming:[/b] When [member streaming_enabled] is [code]true[/code], [method append_text] performs incremental re-parsing of only the unstable tail region (controlled by [member max_unstable_lines]). Call [method finish_stream] after the last append to force a full re-parse for correct final layout.
+		[b]Streaming:[/b] When [member streaming_enabled] is [code]true[/code], [method append_text] performs incremental re-parsing of only the unstable tail region (controlled by [member max_unstable_lines]). Enable [member deferred_layout_enabled] to coalesce streaming layout updates and minimum-size notifications. Call [method finish_stream] after the last append to force a full re-parse for correct final layout.
 
 		[b]Theme:[/b] All visual properties are read from the Godot theme system under the type name [code]"MarkdownLabel"[/code]. See the project documentation for the complete list of theme properties (fonts, font sizes, colors, styleboxes, constants, and icons).
 
@@ -37,7 +37,7 @@
 			<return type="void" />
 			<param index="0" name="delta" type="String" />
 			<description>
-				Appends [param delta] to the current Markdown text. When [member streaming_enabled] is [code]true[/code], only the unstable tail region is re-parsed for performance. When [member auto_scroll] is [code]true[/code] and the scroll bar is near the bottom, the view automatically scrolls to stay at the bottom.
+				Appends [param delta] to the current Markdown text. When [member streaming_enabled] is [code]true[/code], only the unstable tail region is re-parsed for performance. When [member scroll_following] is [code]true[/code] and the scroll bar was already at the bottom, the view automatically scrolls to stay at the bottom.
 			</description>
 		</method>
 		<method name="clear">
@@ -55,13 +55,25 @@
 		<method name="finish_stream">
 			<return type="void" />
 			<description>
-				Forces a full re-parse of the entire document. Call this after the last [method append_text] call to ensure correct final layout. Respects [member auto_scroll] behavior.
+				Forces a full re-parse of the entire document. Call this after the last [method append_text] call to ensure correct final layout. Respects [member scroll_following] behavior.
+			</description>
+		</method>
+		<method name="flush_pending_layout">
+			<return type="bool" />
+			<description>
+				Flushes any deferred streaming parse and layout update immediately. Returns [code]true[/code] if pending text was flushed.
 			</description>
 		</method>
 		<method name="get_anchors" qualifiers="const">
 			<return type="PackedStringArray" />
 			<description>
 				Returns the list of all heading anchor IDs in the document.
+			</description>
+		</method>
+		<method name="get_layout_flush_interval_msec" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns the deferred streaming layout flush interval in milliseconds. The default value is [code]33[/code].
 			</description>
 		</method>
 		<method name="get_content_height" qualifiers="const">
@@ -144,10 +156,16 @@
 				Returns [code]true[/code] if the document contains a heading with the given anchor ID.
 			</description>
 		</method>
-		<method name="is_auto_scroll" qualifiers="const">
+		<method name="is_deferred_layout_enabled" qualifiers="const">
 			<return type="bool" />
 			<description>
-				Returns [code]true[/code] if auto-scroll is enabled. The default value is [code]true[/code].
+				Returns [code]true[/code] if streaming layout updates are coalesced instead of being applied on every [method append_text] call.
+			</description>
+		</method>
+		<method name="is_fit_content_enabled" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if the control reports its rendered content height as its minimum height.
 			</description>
 		</method>
 		<method name="is_context_menu_enabled" qualifiers="const">
@@ -178,6 +196,24 @@
 			<return type="bool" />
 			<description>
 				Returns [code]true[/code] if text selection is enabled. The default value is [code]true[/code].
+			</description>
+		</method>
+		<method name="is_scroll_active" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if internal vertical scrolling is active.
+			</description>
+		</method>
+		<method name="is_scroll_following" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if the view follows appended content when it is already scrolled to the bottom.
+			</description>
+		</method>
+		<method name="is_scroll_following_visible_characters" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if scroll following for visible-character reveals is enabled. MarkdownLabel currently exposes this for RichTextLabel API parity; it has no effect until visible-character clipping is implemented.
 			</description>
 		</method>
 		<method name="is_shortcut_keys_enabled" qualifiers="const">
@@ -243,11 +279,18 @@
 				Selects all text in the document.
 			</description>
 		</method>
-		<method name="set_auto_scroll">
+		<method name="set_fit_content">
 			<return type="void" />
 			<param index="0" name="enabled" type="bool" />
 			<description>
-				Sets whether auto-scroll is enabled. When [code]true[/code] and the scroll bar is near the bottom, the view automatically scrolls to stay at the bottom when text is appended (via [method append_text] or [method finish_stream]).
+				Sets whether the control reports its rendered content height as its minimum height.
+			</description>
+		</method>
+		<method name="set_deferred_layout_enabled">
+			<return type="void" />
+			<param index="0" name="enabled" type="bool" />
+			<description>
+				Sets whether streaming layout updates are deferred and coalesced. This is useful for AI-style token streaming, especially when [member fit_content] is enabled.
 			</description>
 		</method>
 		<method name="set_content_margin">
@@ -299,6 +342,13 @@
 				Sets the maximum number of unstable lines for incremental re-parsing in streaming mode. Clamped to the range [code][1, 256][/code]. The default value is [code]32[/code].
 			</description>
 		</method>
+		<method name="set_layout_flush_interval_msec">
+			<return type="void" />
+			<param index="0" name="msec" type="int" />
+			<description>
+				Sets how often deferred streaming layout updates are flushed. Clamped to the range [code][1, 1000][/code]. The default value is [code]33[/code].
+			</description>
+		</method>
 		<method name="set_open_external_links">
 			<return type="void" />
 			<param index="0" name="enabled" type="bool" />
@@ -311,6 +361,27 @@
 			<param index="0" name="enabled" type="bool" />
 			<description>
 				Sets whether text selection with the mouse is enabled.
+			</description>
+		</method>
+		<method name="set_scroll_active">
+			<return type="void" />
+			<param index="0" name="active" type="bool" />
+			<description>
+				Sets whether internal vertical scrolling is active. When disabled, the internal vertical scroll mode is disabled.
+			</description>
+		</method>
+		<method name="set_scroll_follow">
+			<return type="void" />
+			<param index="0" name="follow" type="bool" />
+			<description>
+				Sets whether the view follows newly appended content when the scroll bar is already at the bottom.
+			</description>
+		</method>
+		<method name="set_scroll_follow_visible_characters">
+			<return type="void" />
+			<param index="0" name="follow" type="bool" />
+			<description>
+				Sets whether scroll following for visible-character reveals is enabled. MarkdownLabel currently exposes this for RichTextLabel API parity; it has no effect until visible-character clipping is implemented.
 			</description>
 		</method>
 		<method name="set_shortcut_keys_enabled">
@@ -329,9 +400,6 @@
 		</method>
 	</methods>
 	<members>
-		<member name="auto_scroll" type="bool" setter="set_auto_scroll" getter="is_auto_scroll" default="true">
-			If [code]true[/code], the view automatically scrolls to the bottom when text is appended and the scroll bar is already near the bottom.
-		</member>
 		<member name="content_margin" type="int" setter="set_content_margin" getter="get_content_margin" default="16">
 			The content margin in pixels. Controls the padding between the MarkdownLabel edges and the rendered content.
 		</member>
@@ -341,11 +409,20 @@
 		<member name="deselect_on_focus_loss_enabled" type="bool" setter="set_deselect_on_focus_loss_enabled" getter="is_deselect_on_focus_loss_enabled" default="true">
 			If [code]true[/code], the text selection is automatically cleared when the node loses focus.
 		</member>
+		<member name="deferred_layout_enabled" type="bool" setter="set_deferred_layout_enabled" getter="is_deferred_layout_enabled" default="false">
+			If [code]true[/code], streaming appends are parsed and laid out in batches instead of on every [method append_text] call.
+		</member>
 		<member name="drag_and_drop_selection_enabled" type="bool" setter="set_drag_and_drop_selection_enabled" getter="is_drag_and_drop_selection_enabled" default="true">
 			If [code]true[/code], selected text can be dragged and dropped to other controls.
 		</member>
 		<member name="extra_font_size" type="int" setter="set_extra_font_size" getter="get_extra_font_size" default="0">
 			Additional font size added to all text sizes in the document. Clamped to [code][0, 16][/code]. Can also be changed by the user with Ctrl+MouseWheel.
+		</member>
+		<member name="fit_content" type="bool" setter="set_fit_content" getter="is_fit_content_enabled" default="false">
+			If [code]true[/code], the control reports the rendered content height as its minimum height.
+		</member>
+		<member name="layout_flush_interval_msec" type="int" setter="set_layout_flush_interval_msec" getter="get_layout_flush_interval_msec" default="33">
+			Deferred streaming layout flush interval in milliseconds. Clamped to [code][1, 1000][/code].
 		</member>
 		<member name="max_unstable_lines" type="int" setter="set_max_unstable_lines" getter="get_max_unstable_lines" default="32">
 			Maximum number of lines from the end of the document that are re-parsed on each [method append_text] call in streaming mode. Clamped to [code][1, 256][/code].
@@ -355,6 +432,15 @@
 		</member>
 		<member name="selection_enabled" type="bool" setter="set_selection_enabled" getter="is_selection_enabled" default="true">
 			If [code]true[/code], text can be selected with the mouse.
+		</member>
+		<member name="scroll_active" type="bool" setter="set_scroll_active" getter="is_scroll_active" default="true">
+			If [code]true[/code], internal vertical scrolling is active.
+		</member>
+		<member name="scroll_following" type="bool" setter="set_scroll_follow" getter="is_scroll_following" default="false">
+			If [code]true[/code], the view follows appended content while the scroll bar is already at the bottom.
+		</member>
+		<member name="scroll_following_visible_characters" type="bool" setter="set_scroll_follow_visible_characters" getter="is_scroll_following_visible_characters" default="false">
+			Exposes RichTextLabel-compatible visible-character scroll following. MarkdownLabel does not currently implement visible-character clipping, so this property is stored but has no visual effect.
 		</member>
 		<member name="shortcut_keys_enabled" type="bool" setter="set_shortcut_keys_enabled" getter="is_shortcut_keys_enabled" default="true">
 			If [code]true[/code], keyboard shortcuts (Ctrl+C, Ctrl+A) are handled by the control.

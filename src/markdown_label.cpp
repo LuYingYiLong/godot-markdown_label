@@ -707,6 +707,11 @@ void MarkdownLabelCanvas::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("clear_document"), &MarkdownLabelCanvas::clear_document);
 	ClassDB::bind_method(D_METHOD("set_streaming_enabled", "enabled"), &MarkdownLabelCanvas::set_streaming_enabled);
 	ClassDB::bind_method(D_METHOD("set_max_unstable_lines", "lines"), &MarkdownLabelCanvas::set_max_unstable_lines);
+	ClassDB::bind_method(D_METHOD("set_deferred_layout_enabled", "enabled"), &MarkdownLabelCanvas::set_deferred_layout_enabled);
+	ClassDB::bind_method(D_METHOD("is_deferred_layout_enabled"), &MarkdownLabelCanvas::is_deferred_layout_enabled);
+	ClassDB::bind_method(D_METHOD("set_layout_flush_interval_msec", "msec"), &MarkdownLabelCanvas::set_layout_flush_interval_msec);
+	ClassDB::bind_method(D_METHOD("get_layout_flush_interval_msec"), &MarkdownLabelCanvas::get_layout_flush_interval_msec);
+	ClassDB::bind_method(D_METHOD("flush_pending_layout"), &MarkdownLabelCanvas::flush_pending_layout);
 	ClassDB::bind_method(D_METHOD("select_all"), &MarkdownLabelCanvas::select_all);
 	ClassDB::bind_method(D_METHOD("select_between_points", "from", "to"), &MarkdownLabelCanvas::select_between_points);
 	ClassDB::bind_method(D_METHOD("get_link_uri_at_point", "position"), &MarkdownLabelCanvas::get_link_uri_at_point);
@@ -738,15 +743,15 @@ void MarkdownLabelCanvas::set_markdown_text(const String& p_text) {
 	selection_drag_attempt = false;
 	parser_state.reset();
 	cached_blocks.clear();
+	pending_stream_parse = false;
+	pending_layout_elapsed_msec = 0.0;
 	layout_prefix_reuse_requested = false;
 	internal_processing_enabled = false;
 	set_process_internal(false);
 	mark_layout_dirty();
 }
 
-void MarkdownLabelCanvas::append_text_incremental(const String& p_delta) {
-	raw_text += p_delta;
-
+void MarkdownLabelCanvas::parse_current_text_incremental() {
 	if (streaming_enabled) {
 		std::vector<String> all_lines = split_lines(raw_text);
 		int32_t reparse_line = find_reparse_line(cached_blocks, all_lines, parser_state, max_unstable_lines);
@@ -760,11 +765,25 @@ void MarkdownLabelCanvas::append_text_incremental(const String& p_delta) {
 		parser_state = result.state;
 		layout_prefix_reuse_requested = false;
 	}
+}
+
+void MarkdownLabelCanvas::append_text_incremental(const String& p_delta) {
+	raw_text += p_delta;
+
+	if (deferred_layout_enabled && streaming_enabled) {
+		pending_stream_parse = true;
+		update_internal_processing();
+		return;
+	}
+
+	parse_current_text_incremental();
 
 	mark_layout_dirty();
 }
 
 void MarkdownLabelCanvas::finish_stream() {
+	pending_stream_parse = false;
+	pending_layout_elapsed_msec = 0.0;
 	parser_state.reset();
 	MarkdownParseResult result = parse_markdown_document(raw_text);
 	cached_blocks = result.blocks;
@@ -780,6 +799,8 @@ void MarkdownLabelCanvas::clear_document() {
 	lines.clear();
 	cached_blocks.clear();
 	parser_state.reset();
+	pending_stream_parse = false;
+	pending_layout_elapsed_msec = 0.0;
 	layout_prefix_reuse_requested = false;
 	rendered_block_count = 0;
 	selection_anchor = 0;
@@ -805,6 +826,46 @@ void MarkdownLabelCanvas::set_streaming_enabled(bool p_enabled) {
 
 void MarkdownLabelCanvas::set_max_unstable_lines(int32_t p_lines) {
 	max_unstable_lines = std::max<int32_t>(1, std::min<int32_t>(p_lines, 256));
+}
+
+void MarkdownLabelCanvas::set_deferred_layout_enabled(bool p_enabled) {
+	if (deferred_layout_enabled == p_enabled) {
+		return;
+	}
+
+	if (!p_enabled) {
+		flush_pending_layout();
+	}
+	deferred_layout_enabled = p_enabled;
+	update_internal_processing();
+}
+
+bool MarkdownLabelCanvas::is_deferred_layout_enabled() const {
+	return deferred_layout_enabled;
+}
+
+void MarkdownLabelCanvas::set_layout_flush_interval_msec(int32_t p_msec) {
+	layout_flush_interval_msec = std::max<int32_t>(1, std::min<int32_t>(p_msec, 1000));
+}
+
+int32_t MarkdownLabelCanvas::get_layout_flush_interval_msec() const {
+	return layout_flush_interval_msec;
+}
+
+bool MarkdownLabelCanvas::flush_pending_layout() {
+	if (!pending_stream_parse) {
+		return false;
+	}
+
+	pending_stream_parse = false;
+	pending_layout_elapsed_msec = 0.0;
+	parse_current_text_incremental();
+	mark_layout_dirty();
+	update_internal_processing();
+	if (label != nullptr) {
+		label->notify_canvas_layout_changed();
+	}
+	return true;
 }
 
 void MarkdownLabelCanvas::request_local_image(const String& p_uri) {
@@ -983,7 +1044,7 @@ bool MarkdownLabelCanvas::update_gif_animations(double p_delta) {
 }
 
 void MarkdownLabelCanvas::update_internal_processing() {
-	const bool should_process = !s_pending_local_image_uris.empty() || dragging_selection || update_gif_animations(0.0);
+	const bool should_process = pending_stream_parse || !s_pending_local_image_uris.empty() || dragging_selection || update_gif_animations(0.0);
 	if (internal_processing_enabled != should_process) {
 		internal_processing_enabled = should_process;
 		set_process_internal(should_process);
@@ -1009,11 +1070,13 @@ bool MarkdownLabelCanvas::is_position_inside_selection(const Vector2& p_position
 	if (!has_selection()) {
 		return false;
 	}
+	flush_pending_layout();
 	rebuild_layout();
 	return is_character_selected(hit_test_document(p_position));
 }
 
 void MarkdownLabelCanvas::select_all() {
+	flush_pending_layout();
 	rebuild_layout();
 	selection_anchor = 0;
 	selection_caret = plain_text.length();
@@ -1021,6 +1084,7 @@ void MarkdownLabelCanvas::select_all() {
 }
 
 void MarkdownLabelCanvas::select_between_points(const Vector2& p_from, const Vector2& p_to) {
+	flush_pending_layout();
 	rebuild_layout();
 	selection_anchor = hit_test_document(p_from);
 	selection_caret = hit_test_document(p_to);
@@ -1028,6 +1092,7 @@ void MarkdownLabelCanvas::select_between_points(const Vector2& p_from, const Vec
 }
 
 String MarkdownLabelCanvas::get_link_uri_at_point(const Vector2& p_position) {
+	flush_pending_layout();
 	rebuild_layout();
 	return link_uri_at_position(p_position);
 }
@@ -1040,6 +1105,7 @@ void MarkdownLabelCanvas::clear_selection() {
 }
 
 Vector2i MarkdownLabelCanvas::search(const String& p_text, int32_t p_flags, int32_t p_from_line, int32_t p_from_column) {
+	flush_pending_layout();
 	rebuild_layout();
 
 	const String needle = p_text;
@@ -1094,6 +1160,8 @@ Vector2i MarkdownLabelCanvas::search(const String& p_text, int32_t p_flags, int3
 }
 
 String MarkdownLabelCanvas::get_selected_text() const {
+	const_cast<MarkdownLabelCanvas*>(this)->flush_pending_layout();
+	const_cast<MarkdownLabelCanvas*>(this)->rebuild_layout();
 	const int64_t from = std::min<int64_t>(selection_anchor, selection_caret);
 	const int64_t to = std::max<int64_t>(selection_anchor, selection_caret);
 	if (from >= to || from < 0 || to > plain_text.length()) {
@@ -1205,20 +1273,26 @@ void MarkdownLabelCanvas::menu_option(int p_option) {
 }
 
 int32_t MarkdownLabelCanvas::get_rendered_block_count() {
+	flush_pending_layout();
 	rebuild_layout();
 	return rendered_block_count;
 }
 
 float MarkdownLabelCanvas::get_content_height() {
+	flush_pending_layout();
 	rebuild_layout();
 	return content_height;
 }
 
 bool MarkdownLabelCanvas::has_anchor(const String& p_anchor) const {
+	const_cast<MarkdownLabelCanvas*>(this)->flush_pending_layout();
+	const_cast<MarkdownLabelCanvas*>(this)->rebuild_layout();
 	return anchor_offsets.has(p_anchor);
 }
 
 PackedStringArray MarkdownLabelCanvas::get_anchors() const {
+	const_cast<MarkdownLabelCanvas*>(this)->flush_pending_layout();
+	const_cast<MarkdownLabelCanvas*>(this)->rebuild_layout();
 	PackedStringArray result;
 	const Array keys = anchor_offsets.keys();
 	for (int32_t i = 0; i < keys.size(); i++) {
@@ -1228,6 +1302,8 @@ PackedStringArray MarkdownLabelCanvas::get_anchors() const {
 }
 
 float MarkdownLabelCanvas::get_anchor_offset(const String& p_anchor) const {
+	const_cast<MarkdownLabelCanvas*>(this)->flush_pending_layout();
+	const_cast<MarkdownLabelCanvas*>(this)->rebuild_layout();
 	if (!anchor_offsets.has(p_anchor)) {
 		return -1.0f;
 	}
@@ -1235,6 +1311,8 @@ float MarkdownLabelCanvas::get_anchor_offset(const String& p_anchor) const {
 }
 
 float MarkdownLabelCanvas::get_search_result_y() const {
+	const_cast<MarkdownLabelCanvas*>(this)->flush_pending_layout();
+	const_cast<MarkdownLabelCanvas*>(this)->rebuild_layout();
 	if (search_match_start < 0 || search_match_end <= search_match_start) {
 		return -1.0f;
 	}
@@ -1259,6 +1337,8 @@ float MarkdownLabelCanvas::get_search_result_y() const {
 }
 
 float MarkdownLabelCanvas::get_bottom_position() const {
+	const_cast<MarkdownLabelCanvas*>(this)->flush_pending_layout();
+	const_cast<MarkdownLabelCanvas*>(this)->rebuild_layout();
 	return content_height;
 }
 
@@ -2058,6 +2138,9 @@ void MarkdownLabelCanvas::rebuild_layout() {
 	}
 	layout_prefix_reuse_requested = false;
 	update_internal_processing();
+	if (label != nullptr) {
+		label->notify_canvas_layout_changed();
+	}
 }
 
 void MarkdownLabelCanvas::draw_selection_for_item(const MarkdownCanvasItem& p_item) {
@@ -2374,17 +2457,25 @@ void MarkdownLabelCanvas::_notification(int p_what) {
 
 	if (p_what == NOTIFICATION_INTERNAL_PROCESS) {
 		const double delta = get_process_delta_time();
+		if (pending_stream_parse) {
+			pending_layout_elapsed_msec += delta * 1000.0;
+			if (pending_layout_elapsed_msec >= static_cast<double>(layout_flush_interval_msec)) {
+				flush_pending_layout();
+			}
+		}
+
 		const bool has_pending_images = process_pending_local_images();
 		const bool has_animated_gifs = update_gif_animations(delta);
+		const bool should_keep_processing = pending_stream_parse || has_pending_images || has_animated_gifs;
 		if (!dragging_selection || !selection_dragged || label == nullptr) {
-			internal_processing_enabled = has_pending_images || has_animated_gifs;
+			internal_processing_enabled = should_keep_processing;
 			set_process_internal(internal_processing_enabled);
 			return;
 		}
 
 		VScrollBar* v_scroll = label->get_v_scroll_bar();
 		if (v_scroll == nullptr) {
-			internal_processing_enabled = has_pending_images || has_animated_gifs;
+			internal_processing_enabled = should_keep_processing;
 			set_process_internal(internal_processing_enabled);
 			return;
 		}
@@ -2979,8 +3070,25 @@ void MarkdownLabel::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_max_unstable_lines", "lines"), &MarkdownLabel::set_max_unstable_lines);
 	ClassDB::bind_method(D_METHOD("get_max_unstable_lines"), &MarkdownLabel::get_max_unstable_lines);
 
-	ClassDB::bind_method(D_METHOD("set_auto_scroll", "enabled"), &MarkdownLabel::set_auto_scroll);
-	ClassDB::bind_method(D_METHOD("is_auto_scroll"), &MarkdownLabel::is_auto_scroll);
+	ClassDB::bind_method(D_METHOD("set_deferred_layout_enabled", "enabled"), &MarkdownLabel::set_deferred_layout_enabled);
+	ClassDB::bind_method(D_METHOD("is_deferred_layout_enabled"), &MarkdownLabel::is_deferred_layout_enabled);
+
+	ClassDB::bind_method(D_METHOD("set_layout_flush_interval_msec", "msec"), &MarkdownLabel::set_layout_flush_interval_msec);
+	ClassDB::bind_method(D_METHOD("get_layout_flush_interval_msec"), &MarkdownLabel::get_layout_flush_interval_msec);
+
+	ClassDB::bind_method(D_METHOD("flush_pending_layout"), &MarkdownLabel::flush_pending_layout);
+
+	ClassDB::bind_method(D_METHOD("set_fit_content", "enabled"), &MarkdownLabel::set_fit_content);
+	ClassDB::bind_method(D_METHOD("is_fit_content_enabled"), &MarkdownLabel::is_fit_content_enabled);
+
+	ClassDB::bind_method(D_METHOD("set_scroll_active", "active"), &MarkdownLabel::set_scroll_active);
+	ClassDB::bind_method(D_METHOD("is_scroll_active"), &MarkdownLabel::is_scroll_active);
+
+	ClassDB::bind_method(D_METHOD("set_scroll_follow", "follow"), &MarkdownLabel::set_scroll_follow);
+	ClassDB::bind_method(D_METHOD("is_scroll_following"), &MarkdownLabel::is_scroll_following);
+
+	ClassDB::bind_method(D_METHOD("set_scroll_follow_visible_characters", "follow"), &MarkdownLabel::set_scroll_follow_visible_characters);
+	ClassDB::bind_method(D_METHOD("is_scroll_following_visible_characters"), &MarkdownLabel::is_scroll_following_visible_characters);
 
 	ClassDB::bind_method(D_METHOD("set_content_margin", "margin"), &MarkdownLabel::set_content_margin);
 	ClassDB::bind_method(D_METHOD("get_content_margin"), &MarkdownLabel::get_content_margin);
@@ -3044,7 +3152,12 @@ void MarkdownLabel::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "shortcut_keys_enabled"), "set_shortcut_keys_enabled", "is_shortcut_keys_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "streaming_enabled"), "set_streaming_enabled", "is_streaming_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "max_unstable_lines", PROPERTY_HINT_RANGE, "1,256"), "set_max_unstable_lines", "get_max_unstable_lines");
-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "auto_scroll"), "set_auto_scroll", "is_auto_scroll");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "deferred_layout_enabled"), "set_deferred_layout_enabled", "is_deferred_layout_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "layout_flush_interval_msec", PROPERTY_HINT_RANGE, "1,1000,1"), "set_layout_flush_interval_msec", "get_layout_flush_interval_msec");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "fit_content"), "set_fit_content", "is_fit_content_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "scroll_active"), "set_scroll_active", "is_scroll_active");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "scroll_following"), "set_scroll_follow", "is_scroll_following");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "scroll_following_visible_characters"), "set_scroll_follow_visible_characters", "is_scroll_following_visible_characters");
 
 	ADD_SIGNAL(MethodInfo("link_pressed", PropertyInfo(Variant::STRING, "uri")));
 	ADD_SIGNAL(MethodInfo("text_changed"));
@@ -3095,14 +3208,18 @@ void MarkdownLabel::ensure_controls() {
 	canvas->set_custom_minimum_size(Vector2(0.0, 1.0));
 	canvas->set_streaming_enabled(streaming_enabled);
 	canvas->set_max_unstable_lines(max_unstable_lines);
+	canvas->set_deferred_layout_enabled(deferred_layout_enabled);
+	canvas->set_layout_flush_interval_msec(layout_flush_interval_msec);
 	canvas->set_markdown_text(raw_text);
 	margin_container->add_child(canvas, false, Node::INTERNAL_MODE_BACK);
 
 	apply_theme_settings();
+	apply_scroll_settings();
 }
 
 void MarkdownLabel::on_scroll_value_changed(double p_value) {
 	(void)p_value;
+	update_scroll_following();
 	if (canvas != nullptr) {
 		canvas->queue_redraw();
 	}
@@ -3116,6 +3233,46 @@ void MarkdownLabel::apply_theme_settings() {
 	margin_container->add_theme_constant_override("margin_left", content_margin);
 	margin_container->add_theme_constant_override("margin_right", content_margin);
 	margin_container->add_theme_constant_override("margin_top", content_margin);
+	if (fit_content) {
+		update_minimum_size();
+	}
+}
+
+void MarkdownLabel::apply_scroll_settings() {
+	if (scroll_container == nullptr) {
+		return;
+	}
+
+	scroll_container->set_vertical_scroll_mode(scroll_active ? ScrollContainer::SCROLL_MODE_AUTO : ScrollContainer::SCROLL_MODE_DISABLED);
+}
+
+void MarkdownLabel::update_scroll_following() {
+	if (!scroll_follow) {
+		scroll_following = false;
+		return;
+	}
+
+	if (scroll_container == nullptr) {
+		scroll_following = true;
+		return;
+	}
+
+	VScrollBar* v_scroll = scroll_container->get_v_scroll_bar();
+	if (v_scroll == nullptr || !v_scroll->is_visible_in_tree()) {
+		scroll_following = true;
+		return;
+	}
+
+	scroll_following = v_scroll->get_value() > (v_scroll->get_max() - v_scroll->get_page() - 1.0);
+}
+
+void MarkdownLabel::scroll_to_following() {
+	if (!scroll_follow || !scroll_following || scroll_container == nullptr || canvas == nullptr) {
+		return;
+	}
+
+	const float target_height = canvas->get_content_height();
+	scroll_container->call_deferred("set_deferred", "scroll_vertical", static_cast<int32_t>(target_height));
 }
 
 void MarkdownLabel::_notification(int p_what) {
@@ -3135,11 +3292,22 @@ void MarkdownLabel::_notification(int p_what) {
 	}
 }
 
+Vector2 MarkdownLabel::_get_minimum_size() const {
+	if (!fit_content) {
+		return Vector2();
+	}
+
+	const float text_height = canvas == nullptr ? 1.0f : canvas->get_content_height();
+	return Vector2(0.0f, text_height + static_cast<float>(content_margin));
+}
+
 void MarkdownLabel::set_markdown_text(const String& p_text) {
+	update_scroll_following();
 	raw_text = p_text;
 	if (canvas != nullptr) {
 		canvas->set_markdown_text(p_text);
 	}
+	notify_canvas_layout_changed();
 	emit_signal("text_changed");
 }
 
@@ -3149,49 +3317,27 @@ String MarkdownLabel::get_markdown_text() const {
 
 void MarkdownLabel::append_text(const String& p_delta) {
 	ensure_controls();
-	bool should_auto_scroll = false;
-	if (auto_scroll && scroll_container != nullptr) {
-		VScrollBar* v_scroll = scroll_container->get_v_scroll_bar();
-		if (v_scroll != nullptr) {
-			const float max_scroll = std::max<float>(0.0f, v_scroll->get_max() - v_scroll->get_page());
-			should_auto_scroll = v_scroll->get_value() >= max_scroll - 24.0f;
-		}
-	}
+	update_scroll_following();
 
 	raw_text += p_delta;
 	canvas->set_streaming_enabled(streaming_enabled);
 	canvas->set_max_unstable_lines(max_unstable_lines);
+	canvas->set_deferred_layout_enabled(deferred_layout_enabled);
+	canvas->set_layout_flush_interval_msec(layout_flush_interval_msec);
 	canvas->append_text_incremental(p_delta);
-	if (should_auto_scroll && scroll_container != nullptr) {
-		VScrollBar* v_scroll = scroll_container->get_v_scroll_bar();
-		if (v_scroll != nullptr) {
-			const float target_height = canvas == nullptr ? 0.0f : canvas->get_content_height();
-			scroll_container->call_deferred("set_deferred", "scroll_vertical", static_cast<int32_t>(target_height));
-		}
+	if (!deferred_layout_enabled || !streaming_enabled) {
+		notify_canvas_layout_changed();
 	}
 	emit_signal("text_changed");
 }
 
 void MarkdownLabel::finish_stream() {
-	bool should_auto_scroll = false;
-	if (auto_scroll && scroll_container != nullptr) {
-		VScrollBar* v_scroll = scroll_container->get_v_scroll_bar();
-		if (v_scroll != nullptr) {
-			const float max_scroll = std::max<float>(0.0f, v_scroll->get_max() - v_scroll->get_page());
-			should_auto_scroll = v_scroll->get_value() >= max_scroll - 24.0f;
-		}
-	}
+	update_scroll_following();
 
 	if (canvas != nullptr) {
 		canvas->finish_stream();
 	}
-	if (should_auto_scroll && scroll_container != nullptr) {
-		VScrollBar* v_scroll = scroll_container->get_v_scroll_bar();
-		if (v_scroll != nullptr) {
-			const float target_height = canvas == nullptr ? 0.0f : canvas->get_content_height();
-			scroll_container->call_deferred("set_deferred", "scroll_vertical", static_cast<int32_t>(target_height));
-		}
-	}
+	notify_canvas_layout_changed();
 }
 
 void MarkdownLabel::clear() {
@@ -3199,6 +3345,10 @@ void MarkdownLabel::clear() {
 	if (canvas != nullptr) {
 		canvas->clear_document();
 	}
+	if (scroll_follow) {
+		scroll_following = true;
+	}
+	notify_canvas_layout_changed();
 	emit_signal("text_changed");
 }
 
@@ -3224,17 +3374,103 @@ int32_t MarkdownLabel::get_max_unstable_lines() const {
 	return max_unstable_lines;
 }
 
-void MarkdownLabel::set_auto_scroll(bool p_enabled) {
-	auto_scroll = p_enabled;
+void MarkdownLabel::set_deferred_layout_enabled(bool p_enabled) {
+	if (deferred_layout_enabled == p_enabled) {
+		return;
+	}
+
+	deferred_layout_enabled = p_enabled;
+	if (canvas != nullptr) {
+		canvas->set_deferred_layout_enabled(p_enabled);
+	}
 }
 
-bool MarkdownLabel::is_auto_scroll() const {
-	return auto_scroll;
+bool MarkdownLabel::is_deferred_layout_enabled() const {
+	return deferred_layout_enabled;
+}
+
+void MarkdownLabel::set_layout_flush_interval_msec(int32_t p_msec) {
+	layout_flush_interval_msec = std::max<int32_t>(1, std::min<int32_t>(p_msec, 1000));
+	if (canvas != nullptr) {
+		canvas->set_layout_flush_interval_msec(layout_flush_interval_msec);
+	}
+}
+
+int32_t MarkdownLabel::get_layout_flush_interval_msec() const {
+	return layout_flush_interval_msec;
+}
+
+bool MarkdownLabel::flush_pending_layout() {
+	if (canvas == nullptr) {
+		return false;
+	}
+	return canvas->flush_pending_layout();
+}
+
+void MarkdownLabel::set_fit_content(bool p_enabled) {
+	if (fit_content == p_enabled) {
+		return;
+	}
+
+	fit_content = p_enabled;
+	update_minimum_size();
+}
+
+bool MarkdownLabel::is_fit_content_enabled() const {
+	return fit_content;
+}
+
+void MarkdownLabel::set_scroll_active(bool p_active) {
+	if (scroll_active == p_active) {
+		return;
+	}
+
+	scroll_active = p_active;
+	apply_scroll_settings();
+	queue_redraw();
+	if (canvas != nullptr) {
+		canvas->queue_redraw();
+	}
+}
+
+bool MarkdownLabel::is_scroll_active() const {
+	return scroll_active;
+}
+
+void MarkdownLabel::set_scroll_follow(bool p_follow) {
+	scroll_follow = p_follow;
+	if (scroll_follow) {
+		if (scroll_container == nullptr) {
+			scroll_following = true;
+		}
+		else {
+			VScrollBar* v_scroll = scroll_container->get_v_scroll_bar();
+			scroll_following = v_scroll == nullptr || !v_scroll->is_visible_in_tree() || v_scroll->get_value() > (v_scroll->get_max() - v_scroll->get_page() - 1.0);
+		}
+	}
+	else {
+		scroll_following = false;
+	}
+}
+
+bool MarkdownLabel::is_scroll_following() const {
+	return scroll_follow;
+}
+
+void MarkdownLabel::set_scroll_follow_visible_characters(bool p_follow) {
+	scroll_follow_visible_characters = p_follow;
+}
+
+bool MarkdownLabel::is_scroll_following_visible_characters() const {
+	return scroll_follow_visible_characters;
 }
 
 void MarkdownLabel::set_content_margin(int32_t p_margin) {
 	content_margin = std::max<int32_t>(0, std::min<int32_t>(p_margin, 128));
 	apply_theme_settings();
+	if (fit_content) {
+		update_minimum_size();
+	}
 }
 
 int32_t MarkdownLabel::get_content_margin() const {
@@ -3430,6 +3666,13 @@ void MarkdownLabel::refresh() {
 	if (canvas != nullptr) {
 		canvas->mark_layout_dirty();
 	}
+}
+
+void MarkdownLabel::notify_canvas_layout_changed() {
+	if (fit_content) {
+		update_minimum_size();
+	}
+	scroll_to_following();
 }
 
 int32_t MarkdownLabel::get_rendered_block_count() const {

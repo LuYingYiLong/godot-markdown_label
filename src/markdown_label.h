@@ -145,10 +145,15 @@ private:
 	MarkdownParserState parser_state;
 	std::vector<MarkdownBlock> cached_blocks;
 	bool streaming_enabled = false;
+	bool deferred_layout_enabled = false;
+	bool pending_stream_parse = false;
 	bool layout_prefix_reuse_requested = false;
 	int32_t max_unstable_lines = 32;
+	int32_t layout_flush_interval_msec = 33;
+	double pending_layout_elapsed_msec = 0.0;
 
 	void mark_layout_dirty();
+	void parse_current_text_incremental();
 	void build_theme_cache();
 	void _generate_context_menu();
 	void _update_context_menu();
@@ -195,6 +200,11 @@ public:
 	void clear_document();
 	void set_streaming_enabled(bool p_enabled);
 	void set_max_unstable_lines(int32_t p_lines);
+	void set_deferred_layout_enabled(bool p_enabled);
+	bool is_deferred_layout_enabled() const;
+	void set_layout_flush_interval_msec(int32_t p_msec);
+	int32_t get_layout_flush_interval_msec() const;
+	bool flush_pending_layout();
 	void request_local_image(const String& p_uri);
 	void request_remote_image(const String& p_uri);
 	void on_image_request_completed(int32_t p_result, int32_t p_response_code, const PackedStringArray& p_headers, const PackedByteArray& p_body, const String& p_uri, uint64_t p_request_id);
@@ -244,11 +254,20 @@ private:
 	bool context_menu_enabled = false;
 	bool shortcut_keys_enabled = true;
 	bool streaming_enabled = false;
+	bool deferred_layout_enabled = false;
 	int32_t max_unstable_lines = 32;
-	bool auto_scroll = true;
+	int32_t layout_flush_interval_msec = 33;
+	bool fit_content = false;
+	bool scroll_active = true;
+	bool scroll_follow = false;
+	bool scroll_following = false;
+	bool scroll_follow_visible_characters = false;
 
 	void ensure_controls();
 	void apply_theme_settings();
+	void apply_scroll_settings();
+	void update_scroll_following();
+	void scroll_to_following();
 	void on_scroll_value_changed(double p_value);
 
 protected:
@@ -256,6 +275,8 @@ protected:
 	void _notification(int p_what);
 
 public:
+	Vector2 _get_minimum_size() const override;
+
 	void set_markdown_text(const String& p_text);
 	String get_markdown_text() const;
 
@@ -269,8 +290,25 @@ public:
 	void set_max_unstable_lines(int32_t p_lines);
 	int32_t get_max_unstable_lines() const;
 
-	void set_auto_scroll(bool p_enabled);
-	bool is_auto_scroll() const;
+	void set_deferred_layout_enabled(bool p_enabled);
+	bool is_deferred_layout_enabled() const;
+
+	void set_layout_flush_interval_msec(int32_t p_msec);
+	int32_t get_layout_flush_interval_msec() const;
+
+	bool flush_pending_layout();
+
+	void set_fit_content(bool p_enabled);
+	bool is_fit_content_enabled() const;
+
+	void set_scroll_active(bool p_active);
+	bool is_scroll_active() const;
+
+	void set_scroll_follow(bool p_follow);
+	bool is_scroll_following() const;
+
+	void set_scroll_follow_visible_characters(bool p_follow);
+	bool is_scroll_following_visible_characters() const;
 
 	void set_content_margin(int32_t p_margin);
 	int32_t get_content_margin() const;
@@ -312,6 +350,7 @@ public:
 
 	Error load_markdown_file(const String& p_path);
 	void refresh();
+	void notify_canvas_layout_changed();
 
 	int32_t get_rendered_block_count() const;
 	float get_content_height() const;

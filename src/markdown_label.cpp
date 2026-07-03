@@ -2,6 +2,8 @@
 #include "markdown_parser.h"
 
 #include <godot_cpp/classes/display_server.hpp>
+#include <godot_cpp/classes/editor_interface.hpp>
+#include <godot_cpp/classes/editor_settings.hpp>
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/global_constants.hpp>
 #include <godot_cpp/classes/image.hpp>
@@ -17,6 +19,7 @@
 #include <godot_cpp/classes/resource_loader.hpp>
 #include <godot_cpp/classes/style_box_empty.hpp>
 #include <godot_cpp/classes/style_box_flat.hpp>
+#include <godot_cpp/classes/style_box_line.hpp>
 #include <godot_cpp/classes/text_server.hpp>
 #include <godot_cpp/classes/text_server_manager.hpp>
 #include <godot_cpp/classes/theme.hpp>
@@ -24,6 +27,7 @@
 #include <godot_cpp/templates/hash_map.hpp>
 #include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/packed_vector2_array.hpp>
+#include <godot_cpp/variant/variant.hpp>
 
 #include <algorithm>
 #include <climits>
@@ -151,6 +155,296 @@ namespace {
 		}
 
 		return p_default;
+	}
+
+	struct EditorColorPair {
+		uint32_t from_rgb;
+		uint32_t to_rgb;
+	};
+
+	struct EditorLightThemeInfo {
+		bool enabled = false;
+		Ref<Theme> editor_theme;
+		Color error_color = Color(1.0f, 0.161f, 0.161f, 1.0f);
+		Color success_color = Color(0.0f, 0.6f, 0.2f, 1.0f);
+		Color warning_color = Color(0.84f, 0.55f, 0.04f, 1.0f);
+	};
+
+	static uint32_t color_to_rgb_key(const Color &p_color) {
+		return (static_cast<uint32_t>(p_color.get_r8()) << 16) | (static_cast<uint32_t>(p_color.get_g8()) << 8) | static_cast<uint32_t>(p_color.get_b8());
+	}
+
+	static Color color_from_rgb_key(uint32_t p_rgb, float p_alpha) {
+		const float red = static_cast<float>((p_rgb >> 16) & 0xff) / 255.0f;
+		const float green = static_cast<float>((p_rgb >> 8) & 0xff) / 255.0f;
+		const float blue = static_cast<float>(p_rgb & 0xff) / 255.0f;
+		return Color(red, green, blue, p_alpha);
+	}
+
+	static Color get_editor_theme_color_or(const Ref<Theme> &p_theme, const StringName &p_name, const Color &p_default) {
+		if (p_theme.is_valid() && p_theme->has_color(p_name, "Editor")) {
+			return p_theme->get_color(p_name, "Editor");
+		}
+
+		return p_default;
+	}
+
+	static bool is_light_editor_base_color(const Color &p_base_color) {
+		return p_base_color.get_luminance() >= 0.5f;
+	}
+
+	static EditorLightThemeInfo get_editor_light_theme_info(Control *p_owner) {
+		EditorLightThemeInfo info;
+		EditorInterface *editor_interface = EditorInterface::get_singleton();
+		if (editor_interface != nullptr) {
+			info.editor_theme = editor_interface->get_editor_theme();
+			if (info.editor_theme.is_valid()) {
+				info.error_color = get_editor_theme_color_or(info.editor_theme, "error_color", info.error_color);
+				info.success_color = get_editor_theme_color_or(info.editor_theme, "success_color", info.success_color);
+				info.warning_color = get_editor_theme_color_or(info.editor_theme, "warning_color", info.warning_color);
+				if (info.editor_theme->has_color("base_color", "Editor")) {
+					info.enabled = is_light_editor_base_color(info.editor_theme->get_color("base_color", "Editor"));
+					return info;
+				}
+				if (info.editor_theme->has_color("font_color", "Editor")) {
+					info.enabled = info.editor_theme->get_color("font_color", "Editor").get_luminance() < 0.5f;
+					return info;
+				}
+			}
+
+			const Ref<EditorSettings> editor_settings = editor_interface->get_editor_settings();
+			if (editor_settings.is_valid() && editor_settings->has_setting("interface/theme/base_color")) {
+				const Variant base_color_value = editor_settings->get_setting("interface/theme/base_color");
+				if (base_color_value.get_type() == Variant::COLOR) {
+					info.enabled = is_light_editor_base_color(base_color_value);
+					return info;
+				}
+			}
+		}
+
+		if (p_owner != nullptr && p_owner->has_theme_color("base_color", "Editor")) {
+			info.enabled = is_light_editor_base_color(p_owner->get_theme_color("base_color", "Editor"));
+		}
+
+		return info;
+	}
+
+	static Color convert_editor_light_color(const Color &p_color, const EditorLightThemeInfo &p_theme_info) {
+		if (!p_theme_info.enabled || p_color.a <= 0.0f) {
+			return p_color;
+		}
+
+		const uint32_t rgb = color_to_rgb_key(p_color);
+		if (rgb == 0xff5f5f) {
+			return Color(p_theme_info.error_color.r, p_theme_info.error_color.g, p_theme_info.error_color.b, p_color.a);
+		}
+		if (rgb == 0x5fff97) {
+			return Color(p_theme_info.success_color.r, p_theme_info.success_color.g, p_theme_info.success_color.b, p_color.a);
+		}
+		if (rgb == 0xffdd65) {
+			return Color(p_theme_info.warning_color.r, p_theme_info.warning_color.g, p_theme_info.warning_color.b, p_color.a);
+		}
+
+		static constexpr EditorColorPair editor_color_map[] = {
+			{ 0x478cbf, 0x478cbf },
+			{ 0x414042, 0x414042 },
+			{ 0xffffff, 0x414141 },
+			{ 0xfefefe, 0xfefefe },
+			{ 0x000000, 0xbfbfbf },
+			{ 0x010101, 0x010101 },
+			{ 0xff0000, 0xff0000 },
+			{ 0x00ff00, 0x00ff00 },
+			{ 0x0000ff, 0x0000ff },
+			{ 0xe0e0e0, 0x5a5a5a },
+			{ 0x808080, 0x808080 },
+			{ 0xb3b3b3, 0x363636 },
+			{ 0x699ce8, 0x699ce8 },
+			{ 0xf9f9f9, 0x606060 },
+			{ 0x5fb2ff, 0x0079f0 },
+			{ 0x003e7a, 0x2b74bb },
+			{ 0xf7f5cf, 0x615f3a },
+			{ 0xc38ef1, 0xa85de9 },
+			{ 0x8da5f3, 0x3d64dd },
+			{ 0x7582a8, 0x6d83c8 },
+			{ 0xfc7f7f, 0xcd3838 },
+			{ 0xb56d6d, 0xbe6a6a },
+			{ 0x99c4ff, 0x4589e6 },
+			{ 0x869ebf, 0x7097cd },
+			{ 0xffa6bd, 0xe65c7f },
+			{ 0xbf909c, 0xcd8b9c },
+			{ 0x8eef97, 0x2fa139 },
+			{ 0x76ad7b, 0x64a66a },
+			{ 0xf0caa0, 0x844b0e },
+			{ 0xff4545, 0xff2929 },
+			{ 0xffe345, 0xffe337 },
+			{ 0x80ff45, 0x74ff34 },
+			{ 0x45ffa2, 0x2cff98 },
+			{ 0x45d7ff, 0x22ccff },
+			{ 0x8045ff, 0x702aff },
+			{ 0xff4596, 0xff2781 },
+			{ 0xe1da5b, 0xd6cf4b },
+			{ 0x62aeff, 0x1678e0 },
+			{ 0x75d1e6, 0x41acc5 },
+			{ 0x84ffee, 0x49ccba },
+			{ 0xf70000, 0xc91616 },
+			{ 0xeec315, 0xd58c0b },
+			{ 0xdbee15, 0xb7d10a },
+			{ 0x288027, 0x218309 },
+			{ 0xffca5f, 0xfea900 },
+			{ 0x2998ff, 0x68b6ff },
+			{ 0xa2d2ff, 0x4998e3 },
+			{ 0x69c4d4, 0x29a3cc },
+			{ 0xea7940, 0xbd5e2c },
+			{ 0xff2b88, 0xbd165f },
+			{ 0xeac840, 0xbd9d1f },
+			{ 0x3cf34e, 0x16a827 },
+			{ 0x2877f6, 0x236be6 },
+			{ 0xeae440, 0x9f9722 },
+			{ 0xa448f0, 0x9853ce },
+			{ 0x5ad5c4, 0x0a9c88 },
+			{ 0xd6d6d6, 0x474747 },
+			{ 0x474747, 0xd6d6d6 },
+			{ 0x919191, 0x6e6e6e },
+			{ 0xfce00e, 0xaa8d24 },
+			{ 0x0e71fc, 0x0350bd },
+			{ 0xc6ced4, 0x828f9b },
+			{ 0x41ecad, 0x25e3a0 },
+			{ 0x6f91f0, 0x6d8eeb },
+			{ 0x5abbef, 0x4fb2e9 },
+			{ 0x35d4f4, 0x27ccf0 },
+			{ 0x4593ec, 0x4690e7 },
+			{ 0xee5677, 0xee7991 },
+			{ 0xe1ec41, 0xb2bb19 },
+			{ 0x54ed9e, 0x57e99f },
+			{ 0x417aec, 0x6993ec },
+			{ 0x55f3e3, 0x12d5c3 },
+			{ 0xf74949, 0xf77070 },
+			{ 0x44bd44, 0x46b946 },
+			{ 0xec418e, 0xec69a3 },
+			{ 0xf1738f, 0xee758e },
+			{ 0x41ec80, 0x2ce573 },
+			{ 0xb9ec41, 0x96ce1a },
+			{ 0xf68f45, 0xf49047 },
+			{ 0xac73f1, 0xad76ee },
+			{ 0xde66f0, 0xdc6aed },
+			{ 0xf066bd, 0xed6abd },
+			{ 0x77ce57, 0x67c046 },
+			{ 0xea686c, 0xd95256 },
+			{ 0xeac968, 0xd9b64f },
+			{ 0xcf68ea, 0xc050dd },
+		};
+
+		for (const EditorColorPair &pair : editor_color_map) {
+			if (rgb == pair.from_rgb) {
+				return color_from_rgb_key(pair.to_rgb, p_color.a);
+			}
+		}
+
+		const float max_channel = std::max<float>(p_color.r, std::max<float>(p_color.g, p_color.b));
+		const float min_channel = std::min<float>(p_color.r, std::min<float>(p_color.g, p_color.b));
+		const float luminance = p_color.get_luminance();
+		if (max_channel - min_channel <= 0.025f && luminance > 0.64f && rgb != 0xfefefe) {
+			const float weight = CLAMP((luminance - 0.64f) / 0.36f, 0.0f, 1.0f);
+			const float gray = Math::lerp(0.52f, 0.28f, weight);
+			return Color(gray, gray, gray, p_color.a);
+		}
+
+		return p_color;
+	}
+
+	static Ref<StyleBox> convert_editor_light_stylebox(const Ref<StyleBox> &p_stylebox, const EditorLightThemeInfo &p_theme_info) {
+		if (!p_theme_info.enabled || p_stylebox.is_null()) {
+			return p_stylebox;
+		}
+
+		const Ref<StyleBoxFlat> source_flat = p_stylebox;
+		if (source_flat.is_valid()) {
+			Ref<StyleBoxFlat> converted;
+			converted.instantiate();
+			converted->set_bg_color(convert_editor_light_color(source_flat->get_bg_color(), p_theme_info));
+			converted->set_border_color(convert_editor_light_color(source_flat->get_border_color(), p_theme_info));
+			converted->set_border_blend(source_flat->get_border_blend());
+			converted->set_draw_center(source_flat->is_draw_center_enabled());
+			converted->set_skew(source_flat->get_skew());
+			converted->set_shadow_color(convert_editor_light_color(source_flat->get_shadow_color(), p_theme_info));
+			converted->set_shadow_size(source_flat->get_shadow_size());
+			converted->set_shadow_offset(source_flat->get_shadow_offset());
+			converted->set_anti_aliased(source_flat->is_anti_aliased());
+			converted->set_aa_size(source_flat->get_aa_size());
+			converted->set_corner_detail(source_flat->get_corner_detail());
+
+			for (int32_t i = 0; i < 4; i++) {
+				const Side side = static_cast<Side>(i);
+				converted->set_content_margin(side, source_flat->get_content_margin(side));
+				converted->set_border_width(side, source_flat->get_border_width(side));
+				converted->set_expand_margin(side, source_flat->get_expand_margin(side));
+			}
+			for (int32_t i = 0; i < 4; i++) {
+				const Corner corner = static_cast<Corner>(i);
+				converted->set_corner_radius(corner, source_flat->get_corner_radius(corner));
+			}
+
+			return converted;
+		}
+
+		const Ref<StyleBoxLine> source_line = p_stylebox;
+		if (source_line.is_valid()) {
+			Ref<StyleBoxLine> converted;
+			converted.instantiate();
+			converted->set_color(convert_editor_light_color(source_line->get_color(), p_theme_info));
+			converted->set_thickness(source_line->get_thickness());
+			converted->set_grow_begin(source_line->get_grow_begin());
+			converted->set_grow_end(source_line->get_grow_end());
+			converted->set_vertical(source_line->is_vertical());
+
+			for (int32_t i = 0; i < 4; i++) {
+				const Side side = static_cast<Side>(i);
+				converted->set_content_margin(side, source_line->get_content_margin(side));
+			}
+
+			return converted;
+		}
+
+		return p_stylebox;
+	}
+
+	static void apply_editor_light_theme(MarkdownThemeCache &p_cache, const EditorLightThemeInfo &p_theme_info) {
+		if (!p_theme_info.enabled) {
+			return;
+		}
+
+		// 统一在主题缓存阶段转换，绘制代码不用关心编辑器亮暗主题。
+		p_cache.color.text = convert_editor_light_color(p_cache.color.text, p_theme_info);
+		p_cache.color.link = convert_editor_light_color(p_cache.color.link, p_theme_info);
+		p_cache.color.code_text = convert_editor_light_color(p_cache.color.code_text, p_theme_info);
+		p_cache.color.code_block = convert_editor_light_color(p_cache.color.code_block, p_theme_info);
+		p_cache.color.code_block_background = convert_editor_light_color(p_cache.color.code_block_background, p_theme_info);
+		p_cache.color.highlight = convert_editor_light_color(p_cache.color.highlight, p_theme_info);
+		p_cache.color.highlight_font = convert_editor_light_color(p_cache.color.highlight_font, p_theme_info);
+		p_cache.color.strikethrough = convert_editor_light_color(p_cache.color.strikethrough, p_theme_info);
+		p_cache.color.selection_color = convert_editor_light_color(p_cache.color.selection_color, p_theme_info);
+		p_cache.color.list_marker = convert_editor_light_color(p_cache.color.list_marker, p_theme_info);
+		p_cache.color.table_header_font = convert_editor_light_color(p_cache.color.table_header_font, p_theme_info);
+		p_cache.color.table_cell_font = convert_editor_light_color(p_cache.color.table_cell_font, p_theme_info);
+		p_cache.color.footnote_ref = convert_editor_light_color(p_cache.color.footnote_ref, p_theme_info);
+		p_cache.color.footnote_text = convert_editor_light_color(p_cache.color.footnote_text, p_theme_info);
+		for (int32_t i = 0; i < 6; i++) {
+			p_cache.color.heading[i] = convert_editor_light_color(p_cache.color.heading[i], p_theme_info);
+		}
+
+		p_cache.stylebox.inline_code = convert_editor_light_stylebox(p_cache.stylebox.inline_code, p_theme_info);
+		p_cache.stylebox.code_block_panel = convert_editor_light_stylebox(p_cache.stylebox.code_block_panel, p_theme_info);
+		p_cache.stylebox.blockquote = convert_editor_light_stylebox(p_cache.stylebox.blockquote, p_theme_info);
+		p_cache.stylebox.blockquote_nested = convert_editor_light_stylebox(p_cache.stylebox.blockquote_nested, p_theme_info);
+		p_cache.stylebox.selection = convert_editor_light_stylebox(p_cache.stylebox.selection, p_theme_info);
+		p_cache.stylebox.search_result = convert_editor_light_stylebox(p_cache.stylebox.search_result, p_theme_info);
+		p_cache.stylebox.separator = convert_editor_light_stylebox(p_cache.stylebox.separator, p_theme_info);
+		p_cache.stylebox.highlight = convert_editor_light_stylebox(p_cache.stylebox.highlight, p_theme_info);
+		p_cache.stylebox.table_panel = convert_editor_light_stylebox(p_cache.stylebox.table_panel, p_theme_info);
+		p_cache.stylebox.table_header_panel = convert_editor_light_stylebox(p_cache.stylebox.table_header_panel, p_theme_info);
+		p_cache.stylebox.table_cell_panel = convert_editor_light_stylebox(p_cache.stylebox.table_cell_panel, p_theme_info);
+		p_cache.stylebox.table_striped_panel = convert_editor_light_stylebox(p_cache.stylebox.table_striped_panel, p_theme_info);
+		p_cache.stylebox.footnote_ref = convert_editor_light_stylebox(p_cache.stylebox.footnote_ref, p_theme_info);
 	}
 
 	static Ref<Font> first_valid_font(const Ref<Font>& p_primary, const Ref<Font>& p_secondary, const Ref<Font>& p_fallback) {
@@ -597,6 +891,7 @@ void MarkdownThemeCache::build(Control* p_owner, int32_t p_extra_font_size) {
 	}
 	color.code_text = get_theme_color_or(p_owner, "MarkdownLabel", "code_text_font_color", Color(1.0f, 1.0f, 1.0f, 1.0f));
 	color.code_block = get_theme_color_or(p_owner, "MarkdownLabel", "code_block_font_color", Color(1.0f, 1.0f, 1.0f, 1.0f));
+	color.code_block_background = get_theme_color_or(p_owner, "MarkdownLabel", "code_block_background_color", Color(0.08f, 0.09f, 0.11f, 1.0f));
 	color.highlight = get_theme_color_or(p_owner, "MarkdownLabel", "highlight_color", Color(1.0f, 0.92f, 0.35f, 0.5f));
 	color.highlight_font = get_theme_color_or(p_owner, "MarkdownLabel", "highlight_font_color", Color(1.0f, 0.700f, 0.211f, 1.0f));
 	color.strikethrough = get_theme_color_or(p_owner, "MarkdownLabel", "strikethrough_color", Color(1.0f, 1.0f, 1.0f, 1.0f));
@@ -684,6 +979,8 @@ void MarkdownThemeCache::build(Control* p_owner, int32_t p_extra_font_size) {
 	if (!icon.file_broken.is_valid()) {
 		icon.file_broken = ResourceLoader::get_singleton()->load("uid://cn51pvobw1gxd");
 	}
+
+	apply_editor_light_theme(*this, get_editor_light_theme_info(p_owner));
 }
 
 // MarkdownLabelCanvas
@@ -1565,7 +1862,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 			font = theme_cache.font.code_block;
 			font_size = theme_cache.font_size.code_block;
 			item.text_color = theme_cache.color.code_block;
-			item.background_color = get_theme_color_or(label, "MarkdownLabel", "code_block_background_color", Color(0.08f, 0.09f, 0.11f, 1.0f));
+			item.background_color = theme_cache.color.code_block_background;
 			item.panel_stylebox = theme_cache.stylebox.code_block_panel;
 			item.framed = true;
 			item.code = true;

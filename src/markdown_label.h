@@ -12,6 +12,7 @@
 #include <godot_cpp/classes/scroll_container.hpp>
 #include <godot_cpp/classes/style_box.hpp>
 #include <godot_cpp/classes/text_paragraph.hpp>
+#include <godot_cpp/classes/text_server.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/v_scroll_bar.hpp>
 #include <godot_cpp/variant/string.hpp>
@@ -263,6 +264,8 @@ private:
 	bool scroll_follow = false;
 	bool scroll_following = false;
 	bool scroll_follow_visible_characters = false;
+	TextServer::AutowrapMode autowrap_mode = TextServer::AUTOWRAP_WORD_SMART;
+	BitField<TextServer::LineBreakFlag> autowrap_flags_trim = TextServer::BREAK_TRIM_START_EDGE_SPACES | TextServer::BREAK_TRIM_END_EDGE_SPACES;
 
 	void ensure_controls();
 	void apply_theme_settings();
@@ -310,6 +313,12 @@ public:
 
 	void set_scroll_follow_visible_characters(bool p_follow);
 	bool is_scroll_following_visible_characters() const;
+
+	void set_autowrap_mode(TextServer::AutowrapMode p_mode);
+	TextServer::AutowrapMode get_autowrap_mode() const;
+
+	void set_autowrap_trim_flags(BitField<TextServer::LineBreakFlag> p_flags);
+	BitField<TextServer::LineBreakFlag> get_autowrap_trim_flags() const;
 
 	void set_content_margin(int32_t p_margin);
 	int32_t get_content_margin() const;

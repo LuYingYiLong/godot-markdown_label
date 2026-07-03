@@ -698,6 +698,39 @@ namespace {
 		return Vector2(std::max<float>(1.0f, texture_width * scale), std::max<float>(1.0f, texture_height * scale));
 	}
 
+	static BitField<TextServer::LineBreakFlag> get_autowrap_trim_mask() {
+		return TextServer::BREAK_TRIM_INDENT | TextServer::BREAK_TRIM_START_EDGE_SPACES | TextServer::BREAK_TRIM_END_EDGE_SPACES;
+	}
+
+	static BitField<TextServer::LineBreakFlag> get_autowrap_break_flags(const MarkdownLabel* p_label) {
+		const TextServer::AutowrapMode mode = p_label == nullptr ? TextServer::AUTOWRAP_WORD_SMART : p_label->get_autowrap_mode();
+		BitField<TextServer::LineBreakFlag> flags = TextServer::BREAK_MANDATORY;
+
+		switch (mode) {
+			case TextServer::AUTOWRAP_WORD_SMART:
+				flags = TextServer::BREAK_WORD_BOUND | TextServer::BREAK_ADAPTIVE | TextServer::BREAK_MANDATORY;
+				break;
+			case TextServer::AUTOWRAP_WORD:
+				flags = TextServer::BREAK_WORD_BOUND | TextServer::BREAK_MANDATORY;
+				break;
+			case TextServer::AUTOWRAP_ARBITRARY:
+				flags = TextServer::BREAK_GRAPHEME_BOUND | TextServer::BREAK_MANDATORY;
+				break;
+			case TextServer::AUTOWRAP_OFF:
+				break;
+		}
+
+		return flags | (p_label == nullptr ? (TextServer::BREAK_TRIM_START_EDGE_SPACES | TextServer::BREAK_TRIM_END_EDGE_SPACES) : p_label->get_autowrap_trim_flags());
+	}
+
+	static void configure_paragraph_autowrap(const Ref<TextParagraph>& p_paragraph, const MarkdownLabel* p_label) {
+		if (p_paragraph.is_null()) {
+			return;
+		}
+
+		p_paragraph->set_break_flags(get_autowrap_break_flags(p_label));
+	}
+
 	static void add_spans_to_paragraph(const Ref<TextParagraph>& p_paragraph, const String& p_text, const std::vector<MarkdownInlineSpan>& p_spans, const MarkdownThemeCache& p_cache, const Ref<Font>& p_normal_font, int32_t p_font_size, HashMap<String, Ref<Texture2D>>& p_image_map, float p_max_width, MarkdownLabelCanvas* p_canvas) {
 		int64_t pos = 0;
 		int32_t image_object_index = 0;
@@ -2081,6 +2114,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 
 				const float paragraph_width = std::max<float>(1.0f, content_rect.size.x - local_left_padding - local_right_padding);
 				quote_line.paragraph.instantiate();
+				configure_paragraph_autowrap(quote_line.paragraph, label);
 				quote_line.paragraph->set_width(paragraph_width);
 				quote_line.paragraph->set_line_spacing(theme_cache.constant.line_separation);
 				add_spans_to_paragraph(quote_line.paragraph, quote_line.text, quote_line.spans, theme_cache, quote_font, quote_font_size, quote_line.image_map, paragraph_width, this);
@@ -2259,6 +2293,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 					const float cell_bottom = get_stylebox_margin_or(cell.stylebox, SIDE_BOTTOM, 4.0f);
 
 					cell.paragraph.instantiate();
+					configure_paragraph_autowrap(cell.paragraph, label);
 					cell.paragraph->set_width(std::max<float>(1.0f, column_width - cell_left - cell_right));
 					cell.paragraph->set_line_spacing(theme_cache.constant.line_separation);
 					if (col_idx < block.column_alignments.size()) {
@@ -2336,6 +2371,7 @@ void MarkdownLabelCanvas::rebuild_layout() {
 		item.spans = item_spans;
 
 		item.paragraph.instantiate();
+		configure_paragraph_autowrap(item.paragraph, label);
 		item.paragraph->set_width(std::max<float>(1.0f, width - left_padding - right_padding));
 		item.paragraph->set_line_spacing(item.type == MARKDOWN_BLOCK_FOOTNOTES ? theme_cache.constant.footnote_line_separation : theme_cache.constant.line_separation);
 		add_spans_to_paragraph(item.paragraph, item_text, item.spans, theme_cache, font, font_size, item.image_map, std::max<float>(1.0f, width - left_padding - right_padding), this);
@@ -3387,6 +3423,12 @@ void MarkdownLabel::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_scroll_follow_visible_characters", "follow"), &MarkdownLabel::set_scroll_follow_visible_characters);
 	ClassDB::bind_method(D_METHOD("is_scroll_following_visible_characters"), &MarkdownLabel::is_scroll_following_visible_characters);
 
+	ClassDB::bind_method(D_METHOD("set_autowrap_mode", "autowrap_mode"), &MarkdownLabel::set_autowrap_mode);
+	ClassDB::bind_method(D_METHOD("get_autowrap_mode"), &MarkdownLabel::get_autowrap_mode);
+
+	ClassDB::bind_method(D_METHOD("set_autowrap_trim_flags", "autowrap_trim_flags"), &MarkdownLabel::set_autowrap_trim_flags);
+	ClassDB::bind_method(D_METHOD("get_autowrap_trim_flags"), &MarkdownLabel::get_autowrap_trim_flags);
+
 	ClassDB::bind_method(D_METHOD("set_content_margin", "margin"), &MarkdownLabel::set_content_margin);
 	ClassDB::bind_method(D_METHOD("get_content_margin"), &MarkdownLabel::get_content_margin);
 
@@ -3455,6 +3497,8 @@ void MarkdownLabel::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "scroll_active"), "set_scroll_active", "is_scroll_active");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "scroll_following"), "set_scroll_follow", "is_scroll_following");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "scroll_following_visible_characters"), "set_scroll_follow_visible_characters", "is_scroll_following_visible_characters");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "autowrap_mode", PROPERTY_HINT_ENUM, "Off,Arbitrary,Word,Word (Smart)"), "set_autowrap_mode", "get_autowrap_mode");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "autowrap_trim_flags", PROPERTY_HINT_FLAGS, "Trim Spaces After Break:64,Trim Spaces Before Break:128"), "set_autowrap_trim_flags", "get_autowrap_trim_flags");
 
 	ADD_SIGNAL(MethodInfo("link_pressed", PropertyInfo(Variant::STRING, "uri")));
 	ADD_SIGNAL(MethodInfo("text_changed"));
@@ -3760,6 +3804,39 @@ void MarkdownLabel::set_scroll_follow_visible_characters(bool p_follow) {
 
 bool MarkdownLabel::is_scroll_following_visible_characters() const {
 	return scroll_follow_visible_characters;
+}
+
+void MarkdownLabel::set_autowrap_mode(TextServer::AutowrapMode p_mode) {
+	if (autowrap_mode == p_mode) {
+		return;
+	}
+
+	autowrap_mode = p_mode;
+	if (canvas != nullptr) {
+		canvas->mark_layout_dirty();
+	}
+	update_minimum_size();
+}
+
+TextServer::AutowrapMode MarkdownLabel::get_autowrap_mode() const {
+	return autowrap_mode;
+}
+
+void MarkdownLabel::set_autowrap_trim_flags(BitField<TextServer::LineBreakFlag> p_flags) {
+	const BitField<TextServer::LineBreakFlag> trimmed_flags = p_flags & get_autowrap_trim_mask();
+	if (autowrap_flags_trim == trimmed_flags) {
+		return;
+	}
+
+	autowrap_flags_trim = trimmed_flags;
+	if (canvas != nullptr) {
+		canvas->mark_layout_dirty();
+	}
+	update_minimum_size();
+}
+
+BitField<TextServer::LineBreakFlag> MarkdownLabel::get_autowrap_trim_flags() const {
+	return autowrap_flags_trim;
 }
 
 void MarkdownLabel::set_content_margin(int32_t p_margin) {

@@ -70,6 +70,18 @@
 				Returns the list of all heading anchor IDs in the document.
 			</description>
 		</method>
+		<method name="get_autowrap_mode" qualifiers="const">
+			<return type="int" enum="TextServer.AutowrapMode" />
+			<description>
+				Returns the current autowrap mode. The default value is [constant TextServer.AUTOWRAP_WORD_SMART].
+			</description>
+		</method>
+		<method name="get_autowrap_trim_flags" qualifiers="const">
+			<return type="int" enum="TextServer.LineBreakFlag" is_bitfield="true" />
+			<description>
+				Returns the autowrap space trimming flags.
+			</description>
+		</method>
 		<method name="get_layout_flush_interval_msec" qualifiers="const">
 			<return type="int" />
 			<description>
@@ -279,6 +291,20 @@
 				Selects all text in the document.
 			</description>
 		</method>
+		<method name="set_autowrap_mode">
+			<return type="void" />
+			<param index="0" name="autowrap_mode" type="int" enum="TextServer.AutowrapMode" />
+			<description>
+				Sets how rendered Markdown text wraps inside the control bounds.
+			</description>
+		</method>
+		<method name="set_autowrap_trim_flags">
+			<return type="void" />
+			<param index="0" name="autowrap_trim_flags" type="int" enum="TextServer.LineBreakFlag" is_bitfield="true" />
+			<description>
+				Sets autowrap space trimming flags. Only trim flags are stored.
+			</description>
+		</method>
 		<method name="set_fit_content">
 			<return type="void" />
 			<param index="0" name="enabled" type="bool" />
@@ -400,6 +426,12 @@
 		</method>
 	</methods>
 	<members>
+		<member name="autowrap_mode" type="int" setter="set_autowrap_mode" getter="get_autowrap_mode" enum="TextServer.AutowrapMode" default="3">
+			If set to something other than [constant TextServer.AUTOWRAP_OFF], rendered Markdown text wraps inside the control bounds.
+		</member>
+		<member name="autowrap_trim_flags" type="int" setter="set_autowrap_trim_flags" getter="get_autowrap_trim_flags" enum="TextServer.LineBreakFlag" is_bitfield="true" default="192">
+			Autowrap space trimming flags. See [constant TextServer.BREAK_TRIM_START_EDGE_SPACES] and [constant TextServer.BREAK_TRIM_END_EDGE_SPACES].
+		</member>
 		<member name="content_margin" type="int" setter="set_content_margin" getter="get_content_margin" default="16">
 			The content margin in pixels. Controls the padding between the MarkdownLabel edges and the rendered content.
 		</member>

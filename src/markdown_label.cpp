@@ -2,6 +2,7 @@
 #include "markdown_parser.h"
 
 #include <godot_cpp/classes/display_server.hpp>
+#include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/editor_settings.hpp>
 #include <godot_cpp/classes/file_access.hpp>
@@ -38,46 +39,96 @@
 using namespace godot;
 
 namespace {
-	static int32_t get_theme_font_size_or(Control* p_owner, const StringName& p_type, const StringName& p_name, int32_t p_default) {
-		const Ref<Theme> theme = p_owner == nullptr ? Ref<Theme>() : p_owner->get_theme();
-		if (theme.is_valid() && theme->has_font_size(p_name, p_type)) {
-			const int32_t value = theme->get_font_size(p_name, p_type);
-			if (value > 0) {
-				return value;
+	static bool packed_string_array_has(const PackedStringArray& p_array, const StringName& p_name) {
+		const String name = String(p_name);
+		for (int32_t i = 0; i < p_array.size(); i++) {
+			if (p_array[i] == name) {
+				return true;
 			}
 		}
-		if (theme.is_valid() && theme->has_constant(p_name, p_type)) {
-			const int32_t value = theme->get_constant(p_name, p_type);
-			if (value > 0) {
-				return value;
-			}
-		}
+
+		return false;
+	}
+
+	static float get_theme_base_scale_or_one(Control* p_owner) {
+		const float base_scale = p_owner == nullptr ? 1.0f : p_owner->get_theme_default_base_scale();
+		return base_scale > 0.0f ? base_scale : 1.0f;
+	}
+
+	static int32_t scale_theme_fallback(int32_t p_value, float p_base_scale) {
+		return static_cast<int32_t>(Math::round(static_cast<double>(p_value) * static_cast<double>(p_base_scale)));
+	}
+
+	static float scale_theme_fallback(float p_value, float p_base_scale) {
+		return p_value * p_base_scale;
+	}
+
+	static int32_t get_explicit_theme_font_size(Control* p_owner, const StringName& p_type, const StringName& p_name) {
 		if (p_owner != nullptr && p_owner->has_theme_font_size_override(p_name)) {
 			const int32_t value = p_owner->get_theme_font_size(p_name, p_type);
 			if (value > 0) {
 				return value;
 			}
 		}
-		if (p_owner != nullptr && p_owner->has_theme_constant_override(p_name)) {
-			const int32_t value = p_owner->get_theme_constant(p_name, p_type);
+
+		const Ref<Theme> theme = p_owner == nullptr ? Ref<Theme>() : p_owner->get_theme();
+		if (theme.is_valid() && packed_string_array_has(theme->get_font_size_list(String(p_type)), p_name)) {
+			const int32_t value = theme->get_font_size(p_name, p_type);
 			if (value > 0) {
 				return value;
 			}
+		}
+
+		return -1;
+	}
+
+	static int32_t get_explicit_theme_constant(Control* p_owner, const StringName& p_type, const StringName& p_name) {
+		if (p_owner != nullptr && p_owner->has_theme_constant_override(p_name)) {
+			return p_owner->get_theme_constant(p_name, p_type);
+		}
+
+		const Ref<Theme> theme = p_owner == nullptr ? Ref<Theme>() : p_owner->get_theme();
+		if (theme.is_valid() && packed_string_array_has(theme->get_constant_list(String(p_type)), p_name)) {
+			return theme->get_constant(p_name, p_type);
+		}
+
+		if (p_owner != nullptr && p_owner->has_theme_constant(p_name, p_type)) {
+			return p_owner->get_theme_constant(p_name, p_type);
+		}
+
+		return INT_MIN;
+	}
+
+	static int32_t get_theme_font_size_or(Control* p_owner, const StringName& p_type, const StringName& p_name, int32_t p_default) {
+		const int32_t explicit_font_size = get_explicit_theme_font_size(p_owner, p_type, p_name);
+		if (explicit_font_size > 0) {
+			return explicit_font_size;
+		}
+
+		const int32_t explicit_constant = get_explicit_theme_constant(p_owner, p_type, p_name);
+		if (explicit_constant > 0) {
+			return explicit_constant;
 		}
 
 		return p_default;
 	}
 
 	static int32_t get_theme_constant_or(Control* p_owner, const StringName& p_type, const StringName& p_name, int32_t p_default) {
-		const Ref<Theme> theme = p_owner == nullptr ? Ref<Theme>() : p_owner->get_theme();
-		if (theme.is_valid() && theme->has_constant(p_name, p_type)) {
-			return theme->get_constant(p_name, p_type);
-		}
-		if (p_owner != nullptr && p_owner->has_theme_constant(p_name, p_type)) {
-			return p_owner->get_theme_constant(p_name, p_type);
+		const int32_t explicit_constant = get_explicit_theme_constant(p_owner, p_type, p_name);
+		if (explicit_constant != INT_MIN) {
+			return explicit_constant;
 		}
 
 		return p_default;
+	}
+
+	static int32_t get_scaled_theme_constant_or(Control* p_owner, const StringName& p_type, const StringName& p_name, int32_t p_default, float p_base_scale) {
+		const int32_t explicit_constant = get_explicit_theme_constant(p_owner, p_type, p_name);
+		if (explicit_constant != INT_MIN) {
+			return explicit_constant;
+		}
+
+		return scale_theme_fallback(p_default, p_base_scale);
 	}
 
 	static Color get_theme_color_or(Control* p_owner, const StringName& p_type, const StringName& p_name, const Color& p_default) {
@@ -130,20 +181,20 @@ namespace {
 		return Ref<Texture2D>();
 	}
 
-	static Ref<StyleBoxFlat> create_internal_stylebox(const Color& p_background_color, const Color& p_border_color, int32_t p_border_left, int32_t p_border_top, int32_t p_border_right, int32_t p_border_bottom, float p_margin_left, float p_margin_top, float p_margin_right, float p_margin_bottom, int32_t p_corner_radius = 0, bool p_draw_center = true, int32_t p_corner_detail = 8) {
+	static Ref<StyleBoxFlat> create_internal_stylebox(const Color& p_background_color, const Color& p_border_color, int32_t p_border_left, int32_t p_border_top, int32_t p_border_right, int32_t p_border_bottom, float p_margin_left, float p_margin_top, float p_margin_right, float p_margin_bottom, int32_t p_corner_radius = 0, bool p_draw_center = true, int32_t p_corner_detail = 8, float p_base_scale = 1.0f) {
 		Ref<StyleBoxFlat> stylebox;
 		stylebox.instantiate();
 		stylebox->set_bg_color(p_background_color);
 		stylebox->set_border_color(p_border_color);
-		stylebox->set_border_width(SIDE_LEFT, p_border_left);
-		stylebox->set_border_width(SIDE_TOP, p_border_top);
-		stylebox->set_border_width(SIDE_RIGHT, p_border_right);
-		stylebox->set_border_width(SIDE_BOTTOM, p_border_bottom);
-		stylebox->set_content_margin(SIDE_LEFT, p_margin_left);
-		stylebox->set_content_margin(SIDE_TOP, p_margin_top);
-		stylebox->set_content_margin(SIDE_RIGHT, p_margin_right);
-		stylebox->set_content_margin(SIDE_BOTTOM, p_margin_bottom);
-		stylebox->set_corner_radius_all(p_corner_radius);
+		stylebox->set_border_width(SIDE_LEFT, scale_theme_fallback(p_border_left, p_base_scale));
+		stylebox->set_border_width(SIDE_TOP, scale_theme_fallback(p_border_top, p_base_scale));
+		stylebox->set_border_width(SIDE_RIGHT, scale_theme_fallback(p_border_right, p_base_scale));
+		stylebox->set_border_width(SIDE_BOTTOM, scale_theme_fallback(p_border_bottom, p_base_scale));
+		stylebox->set_content_margin(SIDE_LEFT, scale_theme_fallback(p_margin_left, p_base_scale));
+		stylebox->set_content_margin(SIDE_TOP, scale_theme_fallback(p_margin_top, p_base_scale));
+		stylebox->set_content_margin(SIDE_RIGHT, scale_theme_fallback(p_margin_right, p_base_scale));
+		stylebox->set_content_margin(SIDE_BOTTOM, scale_theme_fallback(p_margin_bottom, p_base_scale));
+		stylebox->set_corner_radius_all(scale_theme_fallback(p_corner_radius, p_base_scale));
 		stylebox->set_draw_center(p_draw_center);
 		stylebox->set_corner_detail(p_corner_detail);
 		return stylebox;
@@ -195,7 +246,8 @@ namespace {
 
 	static EditorLightThemeInfo get_editor_light_theme_info(Control *p_owner) {
 		EditorLightThemeInfo info;
-		EditorInterface *editor_interface = EditorInterface::get_singleton();
+		Engine *engine = Engine::get_singleton();
+		EditorInterface *editor_interface = engine != nullptr && engine->is_editor_hint() ? EditorInterface::get_singleton() : nullptr;
 		if (editor_interface != nullptr) {
 			info.editor_theme = editor_interface->get_editor_theme();
 			if (info.editor_theme.is_valid()) {
@@ -841,29 +893,35 @@ namespace {
 } // !namespace
 
 void MarkdownThemeCache::build(Control* p_owner, int32_t p_extra_font_size) {
+	base_scale = get_theme_base_scale_or_one(p_owner);
+	const int32_t default_font_size = std::max<int32_t>(1, p_owner == nullptr ? scale_theme_fallback(16, base_scale) : p_owner->get_theme_default_font_size());
+	const auto scale_font_size_from_text = [&](int32_t p_base_font_size) -> int32_t {
+		return std::max<int32_t>(1, static_cast<int32_t>(Math::round(static_cast<double>(default_font_size) * static_cast<double>(p_base_font_size) / 16.0)));
+	};
+
 	// Font sizes
-	font_size.text = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "text_font_size", 16) + p_extra_font_size);
-	font_size.code = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "code_text_font_size", 16) + p_extra_font_size);
-	font_size.code_block = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "code_block_font_size", 16) + p_extra_font_size);
-	font_size.list_marker = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "list_marker_font_size", 16) + p_extra_font_size);
-	font_size.table_header = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "table_header_font_size", 16) + p_extra_font_size);
-	font_size.table_cell = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "table_cell_font_size", 16) + p_extra_font_size);
+	font_size.text = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "text_font_size", default_font_size) + p_extra_font_size);
+	font_size.code = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "code_text_font_size", default_font_size) + p_extra_font_size);
+	font_size.code_block = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "code_block_font_size", default_font_size) + p_extra_font_size);
+	font_size.list_marker = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "list_marker_font_size", default_font_size) + p_extra_font_size);
+	font_size.table_header = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "table_header_font_size", default_font_size) + p_extra_font_size);
+	font_size.table_cell = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "table_cell_font_size", default_font_size) + p_extra_font_size);
 	font_size.footnote_text = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "footnote_text_font_size", font_size.text) + p_extra_font_size);
-	font_size.footnote_ref = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "footnote_ref_font_size", std::max<int32_t>(1, font_size.text - 4)) + p_extra_font_size);
+	font_size.footnote_ref = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", "footnote_ref_font_size", scale_font_size_from_text(12)) + p_extra_font_size);
 
 	static const int32_t default_heading_sizes[] = { 36, 26, 20, 18, 12, 10 };
 	for (int32_t i = 0; i < 6; i++) {
 		const String name = String("h") + String::num_int64(i + 1) + "_font_size";
-		font_size.heading[i] = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", StringName(name), default_heading_sizes[i]) + p_extra_font_size);
+		font_size.heading[i] = std::max<int32_t>(1, get_theme_font_size_or(p_owner, "MarkdownLabel", StringName(name), scale_font_size_from_text(default_heading_sizes[i])) + p_extra_font_size);
 	}
 
 	// Constants
-	constant.line_separation = get_theme_constant_or(p_owner, "MarkdownLabel", "line_separation", 2);
-	constant.paragraph_separation = get_theme_constant_or(p_owner, "MarkdownLabel", "paragraph_separation", 10);
-	constant.list_indent = std::max<int32_t>(0, get_theme_constant_or(p_owner, "MarkdownLabel", "list_indent", 26));
-	constant.list_marker_gap = std::max<int32_t>(0, get_theme_constant_or(p_owner, "MarkdownLabel", "list_marker_gap", 6));
+	constant.line_separation = get_scaled_theme_constant_or(p_owner, "MarkdownLabel", "line_separation", 2, base_scale);
+	constant.paragraph_separation = get_scaled_theme_constant_or(p_owner, "MarkdownLabel", "paragraph_separation", 10, base_scale);
+	constant.list_indent = std::max<int32_t>(0, get_scaled_theme_constant_or(p_owner, "MarkdownLabel", "list_indent", 26, base_scale));
+	constant.list_marker_gap = std::max<int32_t>(0, get_scaled_theme_constant_or(p_owner, "MarkdownLabel", "list_marker_gap", 6, base_scale));
 	constant.table_striped = std::max<int32_t>(0, get_theme_constant_or(p_owner, "MarkdownLabel", "table_striped", 1));
-	constant.footnote_space_before = std::max<int32_t>(0, get_theme_constant_or(p_owner, "MarkdownLabel", "footnote_space_before", 16));
+	constant.footnote_space_before = std::max<int32_t>(0, get_scaled_theme_constant_or(p_owner, "MarkdownLabel", "footnote_space_before", 16, base_scale));
 	constant.footnote_line_separation = std::max<int32_t>(0, get_theme_constant_or(p_owner, "MarkdownLabel", "footnote_line_separation", constant.line_separation));
 	
 	// Fonts
@@ -920,7 +978,7 @@ void MarkdownThemeCache::build(Control* p_owner, int32_t p_extra_font_size) {
 	color.selection_color = get_theme_color_or(p_owner, "MarkdownLabel", "selection_color", Color(0.102f, 0.102f, 1.0f, 0.8f));
 	stylebox.selection = get_theme_stylebox_or(p_owner, "MarkdownLabel", "selection_stylebox");
 	if (!stylebox.selection.is_valid()) {
-		stylebox.selection = create_internal_stylebox(color.selection_color, Color(0, 0, 0, 0), 0, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f);
+		stylebox.selection = create_internal_stylebox(color.selection_color, Color(0, 0, 0, 0), 0, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f, 0, true, 8, base_scale);
 	}
 	color.code_text = get_theme_color_or(p_owner, "MarkdownLabel", "code_text_font_color", Color(1.0f, 1.0f, 1.0f, 1.0f));
 	color.code_block = get_theme_color_or(p_owner, "MarkdownLabel", "code_block_font_color", Color(1.0f, 1.0f, 1.0f, 1.0f));
@@ -942,7 +1000,7 @@ void MarkdownThemeCache::build(Control* p_owner, int32_t p_extra_font_size) {
 	// StyleBoxes
 	stylebox.inline_code = get_theme_stylebox_or(p_owner, "MarkdownLabel", "inline_code");
 	if (!stylebox.inline_code.is_valid()) {
-		stylebox.inline_code = create_internal_stylebox(Color(0.6f, 0.6f, 0.6f, 0.392f), Color(0, 0, 0, 0), 0, 0, 0, 0, 4.0f, 0.0f, 4.0f, 0.0f, 2);
+		stylebox.inline_code = create_internal_stylebox(Color(0.6f, 0.6f, 0.6f, 0.392f), Color(0, 0, 0, 0), 0, 0, 0, 0, 4.0f, 0.0f, 4.0f, 0.0f, 2, true, 8, base_scale);
 	}
 
 	Ref<StyleBoxEmpty> empty;
@@ -951,12 +1009,12 @@ void MarkdownThemeCache::build(Control* p_owner, int32_t p_extra_font_size) {
 
 	stylebox.code_block_panel = get_theme_stylebox_or(p_owner, "MarkdownLabel", "code_block_panel");
 	if (!stylebox.code_block_panel.is_valid()) {
-		stylebox.code_block_panel = create_internal_stylebox(Color(0.0f, 0.0f, 0.0f, 0.6f), Color(0, 0, 0, 0), 0, 0, 0, 0, 8.0f, 8.0f, 8.0f, 8.0f, 3);
+		stylebox.code_block_panel = create_internal_stylebox(Color(0.0f, 0.0f, 0.0f, 0.6f), Color(0, 0, 0, 0), 0, 0, 0, 0, 8.0f, 8.0f, 8.0f, 8.0f, 3, true, 8, base_scale);
 	}
 
 	stylebox.blockquote = get_theme_stylebox_or(p_owner, "MarkdownLabel", "blockquote_panel");
 	if (!stylebox.blockquote.is_valid()) {
-		stylebox.blockquote = create_internal_stylebox(Color(0.0f, 0.0f, 0.0f, 0.196f), Color(0.458f, 0.458f, 0.458f, 1.0f), 2, 0, 0, 0, 16.0f, 16.0f, 8.0f, 16.0f, 0, false);
+		stylebox.blockquote = create_internal_stylebox(Color(0.0f, 0.0f, 0.0f, 0.196f), Color(0.458f, 0.458f, 0.458f, 1.0f), 2, 0, 0, 0, 16.0f, 16.0f, 8.0f, 16.0f, 0, false, 8, base_scale);
 	}
 
 	stylebox.blockquote_nested = get_theme_stylebox_or(p_owner, "MarkdownLabel", "blockquote_nested");
@@ -966,37 +1024,37 @@ void MarkdownThemeCache::build(Control* p_owner, int32_t p_extra_font_size) {
 
 	stylebox.search_result = get_theme_stylebox_or(p_owner, "MarkdownLabel", "search_result");
 	if (!stylebox.search_result.is_valid()) {
-		stylebox.search_result = create_internal_stylebox(Color(1.0f, 0.72f, 0.16f, 0.42f), Color(0, 0, 0, 0), 0, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f);
+		stylebox.search_result = create_internal_stylebox(Color(1.0f, 0.72f, 0.16f, 0.42f), Color(0, 0, 0, 0), 0, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f, 0, true, 8, base_scale);
 	}
 
 	stylebox.highlight = get_theme_stylebox_or(p_owner, "MarkdownLabel", "highlight");
 	if (!stylebox.highlight.is_valid()) {
-		stylebox.highlight = create_internal_stylebox(Color(0.6f, 0.6f, 0.6f, 0.392f), Color(0, 0, 0, 0), 0, 0, 0, 0, 4.0f, 0.0f, 4.0f, 0.0f, 2);
+		stylebox.highlight = create_internal_stylebox(Color(0.6f, 0.6f, 0.6f, 0.392f), Color(0, 0, 0, 0), 0, 0, 0, 0, 4.0f, 0.0f, 4.0f, 0.0f, 2, true, 8, base_scale);
 	}
 
 	stylebox.separator = get_theme_stylebox_or(p_owner, "MarkdownLabel", "separator");
 	if (!stylebox.separator.is_valid()) {
-		stylebox.separator = create_internal_stylebox(Color(0.537f, 0.537f, 0.537f, 1.0f), Color(0, 0, 0, 0), 0, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f);
+		stylebox.separator = create_internal_stylebox(Color(0.537f, 0.537f, 0.537f, 1.0f), Color(0, 0, 0, 0), 0, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f, 0, true, 8, base_scale);
 	}
 
 	stylebox.table_panel = get_theme_stylebox_or(p_owner, "MarkdownLabel", "table_panel");
 	if (!stylebox.table_panel.is_valid()) {
-		stylebox.table_panel = create_internal_stylebox(Color(0.0f, 0.0f, 0.0f, 0.6f), Color(0, 0, 0, 0), 0, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f, 3);
+		stylebox.table_panel = create_internal_stylebox(Color(0.0f, 0.0f, 0.0f, 0.6f), Color(0, 0, 0, 0), 0, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f, 3, true, 8, base_scale);
 	}
 
 	stylebox.table_header_panel = get_theme_stylebox_or(p_owner, "MarkdownLabel", "table_header_panel");
 	if (!stylebox.table_header_panel.is_valid()) {
-		stylebox.table_header_panel = create_internal_stylebox(Color(1.0f, 1.0f, 1.0f, 0.196f), Color(0, 0, 0, 0), 0, 0, 0, 1, 4.0f, 4.0f, 4.0f, 4.0f, 0, false);
+		stylebox.table_header_panel = create_internal_stylebox(Color(1.0f, 1.0f, 1.0f, 0.196f), Color(0, 0, 0, 0), 0, 0, 0, 1, 4.0f, 4.0f, 4.0f, 4.0f, 0, false, 8, base_scale);
 	}
 
 	stylebox.table_cell_panel = get_theme_stylebox_or(p_owner, "MarkdownLabel", "table_cell_panel");
 	if (!stylebox.table_cell_panel.is_valid()) {
-		stylebox.table_cell_panel = create_internal_stylebox(Color(1.0f, 1.0f, 1.0f, 0.196f), Color(0, 0, 0, 0), 0, 0, 0, 0, 4.0f, 4.0f, 4.0f, 4.0f, 0, false);
+		stylebox.table_cell_panel = create_internal_stylebox(Color(1.0f, 1.0f, 1.0f, 0.196f), Color(0, 0, 0, 0), 0, 0, 0, 0, 4.0f, 4.0f, 4.0f, 4.0f, 0, false, 8, base_scale);
 	}
 
 	stylebox.table_striped_panel = get_theme_stylebox_or(p_owner, "MarkdownLabel", "table_striped_panel");
 	if (!stylebox.table_striped_panel.is_valid()) {
-		stylebox.table_striped_panel = create_internal_stylebox(Color(1.0f, 1.0f, 1.0f, 0.024f), Color(0, 0, 0, 0), 0, 0, 0, 0, 4.0f, 4.0f, 4.0f, 4.0f);
+		stylebox.table_striped_panel = create_internal_stylebox(Color(1.0f, 1.0f, 1.0f, 0.024f), Color(0, 0, 0, 0), 0, 0, 0, 0, 4.0f, 4.0f, 4.0f, 4.0f, 0, true, 8, base_scale);
 	}
 
 	// Texture
@@ -2629,6 +2687,7 @@ void MarkdownLabelCanvas::draw_span_decorations(const Ref<TextParagraph>& p_para
 	}
 
 	const Color& link_color = theme_cache.color.link;
+	const float decoration_line_width = std::max<float>(1.0f, theme_cache.base_scale);
 
 	for (const MarkdownInlineSpan& span : p_spans) {
 		if (!(p_draw_code_backgrounds && (span.code || span.highlight || (span.footnote_ref && theme_cache.stylebox.footnote_ref.is_valid()))) && !(p_draw_link_underlines && (!span.link_uri.is_empty() || span.strikethrough))) {
@@ -2674,11 +2733,11 @@ void MarkdownLabelCanvas::draw_span_decorations(const Ref<TextParagraph>& p_para
 					}
 					if (p_draw_link_underlines && span.strikethrough) {
 							const float strike_y = y + line_size.y * 0.5f;
-							draw_line(Vector2(x_base + selected_range.x, strike_y), Vector2(x_base + selected_range.y, strike_y), theme_cache.color.strikethrough, 1.0f);
+							draw_line(Vector2(x_base + selected_range.x, strike_y), Vector2(x_base + selected_range.y, strike_y), theme_cache.color.strikethrough, decoration_line_width);
 						}
 						if (p_draw_link_underlines && !span.link_uri.is_empty()) {
-						const float underline_y = y + line_size.y - 2.0f;
-						draw_line(Vector2(x_base + selected_range.x, underline_y), Vector2(x_base + selected_range.y, underline_y), link_color, 1.0f);
+						const float underline_y = y + line_size.y - scale_theme_fallback(2.0f, theme_cache.base_scale);
+						draw_line(Vector2(x_base + selected_range.x, underline_y), Vector2(x_base + selected_range.y, underline_y), link_color, decoration_line_width);
 					}
 				}
 			}

@@ -32,6 +32,8 @@ using namespace godot;
 class MarkdownLabel;
 
 struct MarkdownThemeCache {
+	float base_scale = 1.0f;
+
 	struct Constants {
 		int32_t line_separation = 2;
 		int32_t paragraph_separation = 10;
